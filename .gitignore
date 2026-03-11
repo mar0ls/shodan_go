@@ -1,0 +1,8 @@
+.env
+.DS_Store
+.venv/
+build/
+.vscode/
+shodan_go
+
+
