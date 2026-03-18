@@ -19,9 +19,9 @@ const usage = `Usage:
 	main search [options] <query>                   — host search (100 results/page)
 
 Search options:
-	--page N      fetch a specific page (default: 1)
-	--all         fetch all pages (warning: consumes credits)
-	--out <file>  save full JSON output to a file
+	-page/--page N      fetch a specific page (default: 1)
+	-all/--all           fetch all pages (warning: consumes credits)
+	-out/--out <file>    save full JSON output to a file
 
 Examples:
   main search "webcam country:PL"
@@ -56,10 +56,10 @@ func parseSearchArgs(args []string) (searchOptions, error) {
 		arg := args[i]
 
 		switch {
-		case arg == "--all":
+		case arg == "--all" || arg == "-all":
 			opts.All = true
 
-		case arg == "--page":
+		case arg == "--page" || arg == "-page":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("missing value for --page")
 			}
@@ -70,24 +70,24 @@ func parseSearchArgs(args []string) (searchOptions, error) {
 			opts.Page = pageValue
 			i++
 
-		case strings.HasPrefix(arg, "--page="):
-			pageValue, err := strconv.Atoi(strings.TrimPrefix(arg, "--page="))
+		case strings.HasPrefix(arg, "--page=") || strings.HasPrefix(arg, "-page="):
+			pageValue, err := strconv.Atoi(strings.TrimPrefix(strings.TrimPrefix(arg, "--page="), "-page="))
 			if err != nil || pageValue < 1 {
 				return opts, fmt.Errorf("--page must be a number >= 1")
 			}
 			opts.Page = pageValue
 
-		case arg == "--out":
+		case arg == "--out" || arg == "-out":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("missing value for --out")
 			}
 			opts.Out = args[i+1]
 			i++
 
-		case strings.HasPrefix(arg, "--out="):
-			opts.Out = strings.TrimPrefix(arg, "--out=")
+		case strings.HasPrefix(arg, "--out=") || strings.HasPrefix(arg, "-out="):
+			opts.Out = strings.TrimPrefix(strings.TrimPrefix(arg, "--out="), "-out=")
 
-		case strings.HasPrefix(arg, "--"):
+		case strings.HasPrefix(arg, "--") || (strings.HasPrefix(arg, "-") && len(arg) > 1):
 			return opts, fmt.Errorf("unknown flag: %s", arg)
 
 		default:
