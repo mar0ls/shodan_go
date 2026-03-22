@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	shodan "shodan/api"
 )
@@ -183,10 +184,27 @@ func main() {
 			fmt.Printf("Fetching all %d pages (will consume %d credits)...\n", totalPages, totalPages-1)
 			for p := startPage + 1; p <= totalPages; p++ {
 				fmt.Printf("  page %d/%d\n", p, totalPages)
-				r, err := s.SearchHosts(opts.Query, p)
+				time.Sleep(1 * time.Second)
+
+				var r *shodan.SearchResult
+				var err error
+				for attempt := 1; attempt <= 3; attempt++ {
+					r, err = s.SearchHosts(opts.Query, p)
+					if err == nil {
+						break
+					}
+					fmt.Fprintf(os.Stderr, "  page %d attempt %d failed: %v\n", p, attempt, err)
+					if attempt < 3 {
+						wait := time.Duration(attempt*2) * time.Second
+						fmt.Fprintf(os.Stderr, "  retrying in %v...\n", wait)
+						time.Sleep(wait)
+					}
+				}
 				if err != nil {
-					fmt.Fprintln(os.Stderr, "error while fetching additional search results")
-					os.Exit(1)
+					fmt.Fprintf(os.Stderr, "error while fetching page %d after 3 attempts: %v\n", p, err)
+					fmt.Fprintf(os.Stderr, "continuing with %d results collected so far (pages 1-%d)\n", len(matches), p-1)
+					fmt.Fprintf(os.Stderr, "tip: re-run with --page %d --all to resume later\n", p)
+					break
 				}
 				matches = append(matches, r.Matches...)
 			}

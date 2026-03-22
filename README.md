@@ -95,9 +95,22 @@ General form:
 # Search all pages and export JSON
 ./shodan-go search --all --out results.json "webcam country:PL"
 
+# Resume a previously interrupted search from page 38
+./shodan-go search --page 38 --all --out results.json "webcam country:PL"
+
 # Example of listing all ips from results JSON
 jq -r '.. | .ip_str? // empty' results.json | sort -u
 ```
+
+### Error handling
+
+When fetching multiple pages with `--all`, the CLI applies automatic safeguards:
+
+- **Rate-limit delay** — 1-second pause between page requests to avoid API throttling.
+- **Retry with backoff** — each failed page is retried up to 3 times with increasing delay (2 s, 4 s).
+- **Partial results preserved** — if a page fails after all retries, already collected results are kept and output normally (printed and/or saved with `--out`).
+- **Resume hint** — on failure the CLI prints the page number so you can continue later with `--page N --all`.
+``ex.: ./shodan-go search --page 38 --all --out results.json "webcam country:PL"``
 
 ## Developer Tools
 
@@ -142,7 +155,7 @@ project root automatically, so you can run them from any working directory.
 ./scripts/build.ps1 -Target windows-amd64
 
 # Custom output base name
-./scripts/build.ps1 -Target local -Out my-cli.exe
+./scripts/build.ps1 -Target local -Out shodan-go.exe
 ```
 
 ## Project Structure
