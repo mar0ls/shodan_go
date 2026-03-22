@@ -193,7 +193,7 @@ func main() {
 					if err == nil {
 						break
 					}
-					fmt.Fprintf(os.Stderr, "  page %d attempt %d failed: %v\n", p, attempt, err)
+					fmt.Fprintf(os.Stderr, "  page %d attempt %d failed: %v\n", p, attempt, err) //nolint:gosec // CLI stderr, not HTTP
 					if attempt < 3 {
 						wait := time.Duration(attempt*2) * time.Second
 						fmt.Fprintf(os.Stderr, "  retrying in %v...\n", wait)
@@ -201,9 +201,9 @@ func main() {
 					}
 				}
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "error while fetching page %d after 3 attempts: %v\n", p, err)
-					fmt.Fprintf(os.Stderr, "continuing with %d results collected so far (pages 1-%d)\n", len(matches), p-1)
-					fmt.Fprintf(os.Stderr, "tip: re-run with --page %d --all to resume later\n", p)
+					fmt.Fprintf(os.Stderr, "error while fetching page %d after 3 attempts: %v\n", p, err)                   //nolint:gosec // CLI stderr, not HTTP
+					fmt.Fprintf(os.Stderr, "continuing with %d results collected so far (pages 1-%d)\n", len(matches), p-1) //nolint:gosec // CLI stderr, not HTTP
+					fmt.Fprintf(os.Stderr, "tip: re-run with --page %d --all to resume later\n", p)                         //nolint:gosec // CLI stderr, not HTTP
 					break
 				}
 				matches = append(matches, r.Matches...)
