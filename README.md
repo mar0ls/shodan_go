@@ -4,6 +4,7 @@
 [![Build](https://github.com/mar0ls/shodan_go/actions/workflows/build.yml/badge.svg)](https://github.com/mar0ls/shodan_go/actions/workflows/build.yml)
 [![Test](https://github.com/mar0ls/shodan_go/actions/workflows/test.yml/badge.svg)](https://github.com/mar0ls/shodan_go/actions/workflows/test.yml)
 [![Lint](https://img.shields.io/badge/lint-golangci--lint-blue)](.golangci.yml)
+[![Release](https://img.shields.io/github/v/release/mar0ls/shodan_go)](https://github.com/mar0ls/shodan_go/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-DOCUMENTATION.md-brightgreen)](docs/DOCUMENTATION.md)
 
 A lightweight command-line interface for querying the Shodan API in Go.
