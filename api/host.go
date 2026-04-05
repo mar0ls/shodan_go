@@ -1,10 +1,12 @@
 package shodan
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // HostLocation describes geographic metadata for a host.
@@ -29,7 +31,7 @@ type HostHTTP struct {
 	HTML       *string        `json:"html"`
 	HTMLHash   *int64         `json:"html_hash"`
 	Location   string         `json:"location"`
-	Redirects  []interface{}  `json:"redirects"`
+	Redirects  []any          `json:"redirects"`
 	Components map[string]any `json:"components"`
 }
 
@@ -79,66 +81,78 @@ type SearchResult struct {
 }
 
 // SearchHosts runs /shodan/host/search with query and page number.
-func (s *Client) SearchHosts(query string, page int) (*SearchResult, error) {
+func (s *Client) SearchHosts(ctx context.Context, query string, page int) (*SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
 	v := url.Values{}
 	v.Set("key", s.apiKey)
 	v.Set("query", query)
-	v.Set("page", fmt.Sprintf("%d", page))
-	res, err := s.httpClient.Get(
-		fmt.Sprintf("%s/shodan/host/search?%s", BaseURL, v.Encode()),
-	)
+	v.Set("page", strconv.Itoa(page))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/shodan/host/search?"+v.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SearchHosts: build request: %w", err)
+	}
+	//nolint:gosec // G704: base URL is set at construction time from application config, not from request input.
+	res, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("SearchHosts: %w", sanitizeErr(err))
 	}
 	defer func() {
 		_ = res.Body.Close()
 	}()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("shodan API error: %s", res.Status)
+		return nil, fmt.Errorf("SearchHosts: shodan API error: %s", res.Status)
 	}
 
 	var ret SearchResult
 	if err := json.NewDecoder(res.Body).Decode(&ret); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SearchHosts: decode response: %w", err)
 	}
 
 	return &ret, nil
 }
 
 // GetHostByIP fetches detailed host information for a specific IP.
-func (s *Client) GetHostByIP(ip string) (*Host, error) {
-	res, err := s.httpClient.Get(
-		fmt.Sprintf("%s/shodan/host/%s?key=%s", BaseURL, ip, s.apiKey),
-	)
+func (s *Client) GetHostByIP(ctx context.Context, ip string) (*Host, error) {
+	v := url.Values{"key": {s.apiKey}}
+	rawURL := s.baseURL + "/shodan/host/" + url.PathEscape(ip) + "?" + v.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GetHostByIP %s: build request: %w", ip, err)
+	}
+	//nolint:gosec // G704: base URL is set at construction time from application config, not from request input.
+	res, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GetHostByIP %s: %w", ip, sanitizeErr(err))
 	}
 	defer func() {
 		_ = res.Body.Close()
 	}()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("shodan API error: %s", res.Status)
+		return nil, fmt.Errorf("GetHostByIP %s: shodan API error: %s", ip, res.Status)
 	}
 
 	var ret Host
 	if err := json.NewDecoder(res.Body).Decode(&ret); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GetHostByIP %s: decode response: %w", ip, err)
 	}
 
 	return &ret, nil
 }
 
 // HostSearch is a compatibility alias for SearchHosts.
-func (s *Client) HostSearch(q string, page int) (*SearchResult, error) {
-	return s.SearchHosts(q, page)
+//
+// Deprecated: Use SearchHosts instead.
+func (s *Client) HostSearch(ctx context.Context, q string, page int) (*SearchResult, error) {
+	return s.SearchHosts(ctx, q, page)
 }
 
 // HostLookup is a compatibility alias for GetHostByIP.
-func (s *Client) HostLookup(ip string) (*Host, error) {
-	return s.GetHostByIP(ip)
+//
+// Deprecated: Use GetHostByIP instead.
+func (s *Client) HostLookup(ctx context.Context, ip string) (*Host, error) {
+	return s.GetHostByIP(ctx, ip)
 }
