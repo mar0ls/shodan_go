@@ -24,11 +24,20 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist
-          GOOS=linux   GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go-linux-amd64   .
-          GOOS=linux   GOARCH=arm64  go build -ldflags="-s -w" -o dist/shodan-go-linux-arm64   .
-          GOOS=darwin  GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go-macos-amd64  .
-          GOOS=darwin  GOARCH=arm64  go build -ldflags="-s -w" -o dist/shodan-go-macos-arm64  .
-          GOOS=windows GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go-windows-amd64.exe .
+          GOOS=linux   GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go .
+          tar -czf dist/shodan-go-linux-amd64.tar.gz -C dist shodan-go && rm dist/shodan-go
+
+          GOOS=linux   GOARCH=arm64  go build -ldflags="-s -w" -o dist/shodan-go .
+          tar -czf dist/shodan-go-linux-arm64.tar.gz -C dist shodan-go && rm dist/shodan-go
+
+          GOOS=darwin  GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go .
+          tar -czf dist/shodan-go-macos-amd64.tar.gz -C dist shodan-go && rm dist/shodan-go
+
+          GOOS=darwin  GOARCH=arm64  go build -ldflags="-s -w" -o dist/shodan-go .
+          tar -czf dist/shodan-go-macos-arm64.tar.gz -C dist shodan-go && rm dist/shodan-go
+
+          GOOS=windows GOARCH=amd64  go build -ldflags="-s -w" -o dist/shodan-go.exe .
+          cd dist && zip shodan-go-windows-amd64.zip shodan-go.exe && rm shodan-go.exe && cd ..
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

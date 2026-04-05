@@ -40,7 +40,23 @@ A lightweight command-line interface for querying the Shodan API in Go.
 
 ## Installation
 
-Clone and build locally:
+### Download pre-built binary (recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/mar0ls/shodan_go/releases/latest):
+
+```bash
+# Linux (amd64)
+tar -xzf shodan-go-linux-amd64.tar.gz
+./shodan-go --help
+
+# macOS (Apple Silicon)
+tar -xzf shodan-go-macos-arm64.tar.gz
+./shodan-go --help
+
+# Windows (amd64) — extract shodan-go-windows-amd64.zip
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/mar0ls/shodan_go.git
