@@ -1,6 +1,8 @@
 # Shodan-Go CLI
 
 [![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev/doc/install)
+[![Build](https://github.com/mar0ls/shodan_go/actions/workflows/build.yml/badge.svg)](https://github.com/mar0ls/shodan_go/actions/workflows/build.yml)
+[![Test](https://github.com/mar0ls/shodan_go/actions/workflows/test.yml/badge.svg)](https://github.com/mar0ls/shodan_go/actions/workflows/test.yml)
 [![Lint](https://img.shields.io/badge/lint-golangci--lint-blue)](.golangci.yml)
 [![Docs](https://img.shields.io/badge/docs-DOCUMENTATION.md-brightgreen)](docs/DOCUMENTATION.md)
 
@@ -19,9 +21,13 @@ A lightweight command-line interface for querying the Shodan API in Go.
 ## Key Features
 
 - Minimal CLI with two core commands: `host` and `search`
-- Safe API client with timeout-based HTTP requests
+- Context-aware HTTP client with 30 s timeout and cancellation support
+- API key encoded via `url.Values` — never interpolated raw into URLs
+- API key stripped from error messages (`sanitizeErr` removes it from `*url.Error`)
+- IP path encoded with `url.PathEscape` to prevent URL manipulation
 - Search pagination support (`--page`, `--all`)
 - JSON export with output-path sanitization (`--out`)
+- Automatic retry with exponential backoff for paginated fetches
 - Linting and formatter support via `golangci-lint`
 - Auto-generated developer docs from source comments
 
@@ -46,6 +52,21 @@ Run directly in development mode:
 ```bash
 go run .
 ```
+
+## Security
+
+The following security measures are built into the client and CLI:
+
+| Concern | Mitigation |
+|---------|------------|
+| API key in URLs | Passed via `url.Values`, never via `fmt.Sprintf` |
+| API key in error messages | `sanitizeErr` strips the key from `*url.Error` before logging |
+| URL/path injection via IP parameter | `url.PathEscape` applied before embedding in URL path |
+| Output file path traversal | `filepath.Clean` + dotdot traversal check (absolute paths like `/tmp/out.json` are allowed) |
+| Long-running / hanging requests | Every HTTP request uses `context.Context` + 30 s client timeout |
+| Secret in source code | `SHODAN_API_KEY` is read from environment only — never hardcoded |
+
+> **Never commit your `SHODAN_API_KEY`.** Add `.env` to `.gitignore` and use your hosting platform's secret manager for production deployments.
 
 ## Configuration
 
@@ -78,7 +99,8 @@ General form:
 |---|---|
 | `--page N` | Fetch only page `N` (default: `1`) |
 | `--all` | Fetch all pages (consumes additional credits) |
-| `--out <file>` | Save full JSON result to file |
+| `--out <file>` | Save full JSON result to a file (relative or absolute path) |
+| `-h`, `--help` | Show usage and exit |
 
 ### Examples
 
@@ -92,8 +114,14 @@ General form:
 # Search, specific page
 ./shodan-go search --page 3 "nginx country:DE"
 
-# Search all pages and export JSON
+# Search all pages and export JSON (relative path)
 ./shodan-go search --all --out results.json "webcam country:PL"
+
+# Search all pages and export to absolute path
+./shodan-go search --all --out /tmp/results.json "webcam country:PL"
+
+# Show help
+./shodan-go --help
 
 # Resume a previously interrupted search from page 38
 ./shodan-go search --page 38 --all --out results.json "webcam country:PL"
@@ -107,10 +135,30 @@ jq -r '.. | .ip_str? // empty' results.json | sort -u
 When fetching multiple pages with `--all`, the CLI applies automatic safeguards:
 
 - **Rate-limit delay** — 1-second pause between page requests to avoid API throttling.
-- **Retry with backoff** — each failed page is retried up to 3 times with increasing delay (2 s, 4 s).
+- **Retry with backoff** — each failed page is retried up to 3 times with increasing delay (2 s, 4 s, 6 s).
 - **Partial results preserved** — if a page fails after all retries, already collected results are kept and output normally (printed and/or saved with `--out`).
 - **Resume hint** — on failure the CLI prints the page number so you can continue later with `--page N --all`.
 ``ex.: ./shodan-go search --page 38 --all --out results.json "webcam country:PL"``
+
+## Testing
+
+Run the full test suite (includes race-condition detection):
+
+```bash
+go test -race ./...
+```
+
+Generate a coverage report:
+
+```bash
+go test -race -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out   # summary per function
+go tool cover -html=coverage.out   # interactive HTML report
+```
+
+Current coverage: ~77% overall (`shodan/api` ~82%, `shodan` main package ~75%).
+The zero-coverage items are all deprecated alias wrappers and the `main()` entry point
+(which requires a live API key).
 
 ## Developer Tools
 
@@ -162,11 +210,20 @@ project root automatically, so you can run them from any working directory.
 
 ```text
 .
-├── api/                 # Shodan client, models, and API operations
-├── docs/                # Generated documentation
-├── scripts/             # Build and docs generation helpers
-├── main.go              # CLI entrypoint
-├── .golangci.yml        # Lint/formatter configuration
+├── .github/
+│   └── workflows/
+│       ├── build.yml        # CI: build matrix (Linux/macOS/Windows) + cross-compile
+│       └── test.yml         # CI: race tests, coverage upload, golangci-lint
+├── api/
+│   ├── shodan.go            # Client struct, Option pattern, sanitizeErr
+│   ├── api.go               # GetAPIInfo
+│   ├── host.go              # SearchHosts, GetHostByIP, host types
+│   └── client_test.go       # httptest-based API tests
+├── docs/                    # Auto-generated documentation
+├── scripts/                 # Build and docs generation helpers
+├── main.go                  # CLI entrypoint (host / search commands)
+├── main_test.go             # Unit tests for CLI functions
+├── .golangci.yml            # Lint/formatter configuration
 └── go.mod
 ```
 

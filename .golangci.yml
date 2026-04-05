@@ -12,6 +12,18 @@ linters:
     - gocritic
     - gosec
     - nolintlint
+  settings:
+    gosec:
+      # G705 (XSS via taint analysis) is a false positive for a CLI writing to os.Stdout/bytes.Buffer,
+      # not to an HTTP ResponseWriter.
+      excludes:
+        - G705
+    revive:
+      severity: warning
+    gocritic:
+      enabled-checks:
+        - appendAssign
+        - boolExprSimplify
 formatters:
   enable:
     - gofumpt
@@ -24,10 +36,3 @@ issues:
     - path: "^generated_.*\\.go$"
       linters:
         - all
-linters-settings:
-  revive:
-    severity: warning
-  gocritic:
-    enabled-checks:
-      - appendAssign
-      - boolExprSimplify
