@@ -24,13 +24,15 @@ linters:
       enabled-checks:
         - appendAssign
         - boolExprSimplify
+  exclusions:
+    rules:
+      - path: "^generated_.*\\.go$"
+        linters:
+          - all
 formatters:
   enable:
     - gofumpt
     - goimports
-exclusions:
-  presets: []
-  rules:
-    - path: "^generated_.*\\.go$"
-      linters:
-        - all
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
