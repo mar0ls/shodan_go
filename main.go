@@ -2,8 +2,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -15,19 +17,34 @@ import (
 	shodan "shodan/api"
 )
 
-const usage = `Usage:
-	main host <ip>                                  — details for a specific host
-	main search [options] <query>                   — host search (100 results/page)
+const (
+	maxRetries     = 3               // maximum number of retry attempts per page fetch
+	retryBaseDelay = 2 * time.Second // base wait between retries; multiplied by attempt number
+	resultsPerPage = 100             // Shodan returns at most 100 results per page
+	pagePauseDelay = 1 * time.Second // delay between pages in --all mode to avoid rate limiting
+)
+
+var usage string
+
+func init() {
+	bin := filepath.Base(os.Args[0])
+	usage = fmt.Sprintf(`Usage:
+	%s host <ip>                                  — details for a specific host
+	%s search [options] <query>                   — host search (100 results/page)
 
 Search options:
 	-page/--page N      fetch a specific page (default: 1)
 	-all/--all           fetch all pages (warning: consumes credits)
-	-out/--out <file>    save full JSON output to a file
+	-out/--out <file>    save JSON output to a file (relative or absolute path)
+
+General flags:
+	-h, --help           show this help message
 
 Examples:
-  main search "webcam country:PL"
-  main search --page 3 "apache country:PL"
-  main search --all --out wyniki.txt "apache country:PL"`
+  %s search "webcam country:PL"
+  %s search --page 3 "apache country:PL"
+  %s search --all --out /tmp/wyniki.json "apache country:PL"`, bin, bin, bin, bin, bin)
+}
 
 // searchOptions stores parsed flags and query text for the search command.
 type searchOptions struct {
@@ -98,10 +115,21 @@ func parseSearchArgs(args []string) (searchOptions, error) {
 
 	opts.Query = strings.TrimSpace(strings.Join(queryParts, " "))
 	if opts.Query == "" {
-		return opts, fmt.Errorf("missing query, e.g. main search \"apache country:PL\"")
+		return opts, fmt.Errorf("missing query, e.g. %s search \"apache country:PL\"", filepath.Base(os.Args[0]))
 	}
 
 	return opts, nil
+}
+
+// validateOutPath returns an error if the path contains ".." traversal components.
+// Both absolute paths (e.g. /tmp/results.json) and relative paths are accepted;
+// only upward traversal above the current directory is rejected.
+func validateOutPath(path string) error {
+	clean := filepath.Clean(path)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("--out path must not traverse above the current directory")
+	}
+	return nil
 }
 
 // formatLine builds one readable console row for search results.
@@ -119,8 +147,138 @@ func formatLine(host shodan.Host) string {
 	return fmt.Sprintf("%-18s port %-6d %s", host.IPString, host.Port, extra)
 }
 
-// main dispatches CLI commands and prints host or search results.
+// fetchPageWithRetry fetches a single search page, retrying up to maxRetries times on failure.
+// baseDelay is multiplied by the attempt number between retries; pass 0 to skip sleeping (tests).
+func fetchPageWithRetry(ctx context.Context, s *shodan.Client, query string, page int, baseDelay time.Duration) (*shodan.SearchResult, error) {
+	var (
+		r   *shodan.SearchResult
+		err error
+	)
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		r, err = s.SearchHosts(ctx, query, page)
+		if err == nil {
+			return r, nil
+		}
+		log.Printf("page %d attempt %d failed: %v", page, attempt, err) //nolint:gosec // G706: error originates from Shodan API, not user input
+		if attempt < maxRetries && baseDelay > 0 {
+			wait := time.Duration(attempt) * baseDelay
+			log.Printf("retrying in %v...", wait)
+			time.Sleep(wait)
+		}
+	}
+	return nil, fmt.Errorf("page %d: all %d attempts failed: %w", page, maxRetries, err)
+}
+
+// runHost fetches and prints details for a single IP.
+func runHost(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	ip := strings.Join(args, " ")
+	host, err := s.GetHostByIP(ctx, ip)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "IP:      %s\n", host.IPString)
+	_, _ = fmt.Fprintf(w, "Org:     %s\n", host.Org)
+	_, _ = fmt.Fprintf(w, "ISP:     %s\n", host.ISP)
+	_, _ = fmt.Fprintf(w, "Country: %s\n", host.Location.CountryName)
+	if host.OS != nil && *host.OS != "" {
+		_, _ = fmt.Fprintf(w, "OS:      %s\n", *host.OS)
+	}
+	if len(host.Hostnames) > 0 {
+		_, _ = fmt.Fprintf(w, "Hosts:   %s\n", strings.Join(host.Hostnames, ", "))
+	}
+	_, _ = fmt.Fprintf(w, "Ports:   %v\n", host.Ports)
+	return nil
+}
+
+// runSearch executes a paginated host search and optionally exports JSON.
+// pagePause is the delay between page fetches in --all mode (pass 0 in tests).
+// retryBase is the base delay for fetchPageWithRetry (pass 0 in tests).
+func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer, pagePause, retryBase time.Duration) error {
+	opts, err := parseSearchArgs(args)
+	if err != nil {
+		return err
+	}
+
+	startPage := opts.Page
+	if opts.All {
+		startPage = 1
+	}
+
+	// First request tells us total results/pages.
+	first, err := s.SearchHosts(ctx, opts.Query, startPage)
+	if err != nil {
+		return err
+	}
+	totalPages := int(math.Ceil(float64(first.Total) / float64(resultsPerPage)))
+	_, _ = fmt.Fprintf(w, "Found results: %d  |  Pages: %d\n\n", first.Total, totalPages)
+
+	matches := first.Matches
+
+	if opts.All && totalPages > 1 {
+		_, _ = fmt.Fprintf(w, "Fetching all %d pages (will consume %d credits)...\n", totalPages, totalPages-1)
+		for p := startPage + 1; p <= totalPages; p++ {
+			_, _ = fmt.Fprintf(w, "  page %d/%d\n", p, totalPages)
+			if pagePause > 0 {
+				time.Sleep(pagePause)
+			}
+
+			r, fetchErr := fetchPageWithRetry(ctx, s, opts.Query, p, retryBase)
+			if fetchErr != nil {
+				log.Printf("error while fetching page %d: %v", p, fetchErr)                               //nolint:gosec // G706: error from Shodan API, not user input
+				log.Printf("continuing with %d results collected so far (pages 1-%d)", len(matches), p-1) //nolint:gosec // G706: integer values, safe
+				log.Printf("tip: re-run with --page %d --all to resume later", p)                         //nolint:gosec // G706: integer values, safe
+				break
+			}
+			matches = append(matches, r.Matches...)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	if !opts.All {
+		_, _ = fmt.Fprintf(w, "Selected page: %d\n\n", opts.Page)
+	}
+
+	if opts.Out != "" {
+		if err := validateOutPath(opts.Out); err != nil {
+			return err
+		}
+		payload := searchOutput{
+			Query:      opts.Query,
+			Total:      first.Total,
+			TotalPages: totalPages,
+			Page:       startPage,
+			AllPages:   opts.All,
+			Count:      len(matches),
+			Matches:    matches,
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal output: %w", err)
+		}
+		outputPath := filepath.Clean(opts.Out)
+		//nolint:gosec // G304: path validated by validateOutPath above; user explicitly provides this path.
+		if err := os.WriteFile(outputPath, data, 0o600); err != nil {
+			return fmt.Errorf("write output file: %w", err)
+		}
+		_, _ = fmt.Fprintf(w, "Saved full JSON (%d records) to: %s\n\n", len(matches), outputPath)
+	}
+
+	for _, host := range matches {
+		_, _ = fmt.Fprintln(w, formatLine(host))
+	}
+	return nil
+}
+
+// main dispatches CLI commands.
 func main() {
+	// Handle -h/--help before any other processing so it always works.
+	for _, a := range os.Args[1:] {
+		if a == "-h" || a == "--help" {
+			fmt.Println(usage)
+			return
+		}
+	}
+
 	if len(os.Args) < 3 {
 		log.Fatalln(usage)
 	}
@@ -128,123 +286,25 @@ func main() {
 	if apiKey == "" {
 		log.Fatalln("SHODAN_API_KEY environment variable not set")
 	}
+
+	ctx := context.Background()
 	s := shodan.NewClient(apiKey)
-	info, err := s.GetAPIInfo()
+
+	info, err := s.GetAPIInfo(ctx)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	fmt.Printf("Query Credits: %d\nScan Credits:  %d\n\n", info.QueryCredits, info.ScanCredits)
 
-	cmd := os.Args[1]
-
-	switch cmd {
+	switch os.Args[1] {
 	case "host":
-		// Host mode: show richer details for a single IP.
-		arg := strings.Join(os.Args[2:], " ")
-		host, err := s.GetHostByIP(arg)
-		if err != nil {
+		if err := runHost(ctx, s, os.Args[2:], os.Stdout); err != nil {
 			log.Fatalln(err)
 		}
-		fmt.Printf("IP:      %s\n", host.IPString)
-		fmt.Printf("Org:     %s\n", host.Org)
-		fmt.Printf("ISP:     %s\n", host.ISP)
-		fmt.Printf("Country: %s\n", host.Location.CountryName)
-		if host.OS != nil && *host.OS != "" {
-			fmt.Printf("OS:      %s\n", *host.OS)
-		}
-		if len(host.Hostnames) > 0 {
-			fmt.Printf("Hosts:   %s\n", strings.Join(host.Hostnames, ", "))
-		}
-		fmt.Printf("Ports:   %v\n", host.Ports)
-
 	case "search":
-		// Search mode: list hosts and optionally export full raw JSON.
-		opts, err := parseSearchArgs(os.Args[2:])
-		if err != nil {
+		if err := runSearch(ctx, s, os.Args[2:], os.Stdout, pagePauseDelay, retryBaseDelay); err != nil {
 			log.Fatalln(err)
 		}
-
-		startPage := opts.Page
-		if opts.All {
-			startPage = 1
-		}
-
-		// First request tells us total results/pages.
-		first, err := s.SearchHosts(opts.Query, startPage)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		totalPages := int(math.Ceil(float64(first.Total) / 100.0))
-		fmt.Printf("Found results: %d  |  Pages: %d\n\n", first.Total, totalPages)
-
-		// Start with the requested page; append more only when --all is used.
-		matches := first.Matches
-
-		if opts.All && totalPages > 1 {
-			fmt.Printf("Fetching all %d pages (will consume %d credits)...\n", totalPages, totalPages-1)
-			for p := startPage + 1; p <= totalPages; p++ {
-				fmt.Printf("  page %d/%d\n", p, totalPages)
-				time.Sleep(1 * time.Second)
-
-				var r *shodan.SearchResult
-				var err error
-				for attempt := 1; attempt <= 3; attempt++ {
-					r, err = s.SearchHosts(opts.Query, p)
-					if err == nil {
-						break
-					}
-					fmt.Fprintf(os.Stderr, "  page %d attempt %d failed: %v\n", p, attempt, err) //nolint:gosec // CLI stderr, not HTTP
-					if attempt < 3 {
-						wait := time.Duration(attempt*2) * time.Second
-						fmt.Fprintf(os.Stderr, "  retrying in %v...\n", wait)
-						time.Sleep(wait)
-					}
-				}
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "error while fetching page %d after 3 attempts: %v\n", p, err)                   //nolint:gosec // CLI stderr, not HTTP
-					fmt.Fprintf(os.Stderr, "continuing with %d results collected so far (pages 1-%d)\n", len(matches), p-1) //nolint:gosec // CLI stderr, not HTTP
-					fmt.Fprintf(os.Stderr, "tip: re-run with --page %d --all to resume later\n", p)                         //nolint:gosec // CLI stderr, not HTTP
-					break
-				}
-				matches = append(matches, r.Matches...)
-			}
-			fmt.Println()
-		}
-
-		if !opts.All {
-			fmt.Printf("Selected page: %d\n\n", opts.Page)
-		}
-
-		if opts.Out != "" {
-			payload := searchOutput{
-				Query:      opts.Query,
-				Total:      first.Total,
-				TotalPages: totalPages,
-				Page:       startPage,
-				AllPages:   opts.All,
-				Count:      len(matches),
-				Matches:    matches,
-			}
-			data, err := json.MarshalIndent(payload, "", "  ")
-			if err != nil {
-				log.Fatalln(err)
-			}
-			outputPath := filepath.Clean(opts.Out)
-			if outputPath == "." || outputPath == ".." || filepath.IsAbs(outputPath) || strings.HasPrefix(outputPath, ".."+string(filepath.Separator)) {
-				log.Fatalln("--out must be a relative file path within the current directory")
-			}
-			//nolint:gosec // outputPath is sanitized via filepath.Clean and relative-path checks above.
-			if err := os.WriteFile(outputPath, data, 0o600); err != nil {
-				log.Fatalln(err)
-			}
-			fmt.Printf("Saved full JSON (%d records) to: %s\n\n", len(matches), outputPath)
-		}
-
-		for _, host := range matches {
-			line := formatLine(host)
-			fmt.Println(line)
-		}
-
 	default:
 		log.Fatalln(usage)
 	}
