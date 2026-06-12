@@ -14,10 +14,13 @@ linters:
     - nolintlint
   settings:
     gosec:
-      # G705 (XSS via taint analysis) is a false positive for a CLI writing to os.Stdout/bytes.Buffer,
-      # not to an HTTP ResponseWriter.
-      # G706 (log injection) is a false positive for log.Printf calls with integer arguments (%d).
+      # G703: path traversal taint — false positive; output path is validated by validateOutPath.
+      # G704: SSRF taint — false positive; all requests go to the hardcoded api.shodan.io base URL.
+      # G705: XSS taint — false positive for a CLI writing to os.Stdout/bytes.Buffer.
+      # G706: log injection — false positive for log.Printf with integer arguments (%d).
       excludes:
+        - G703
+        - G704
         - G705
         - G706
     revive:
