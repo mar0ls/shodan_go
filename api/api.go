@@ -26,7 +26,6 @@ func (s *Client) GetAPIInfo(ctx context.Context) (*APIInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GetAPIInfo: build request: %w", err)
 	}
-	//nolint:gosec // G704: base URL is set at construction time from application config, not from request input.
 	res, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GetAPIInfo: %w", sanitizeErr(err))

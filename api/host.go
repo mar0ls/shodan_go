@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // HostLocation describes geographic metadata for a host.
@@ -93,7 +94,6 @@ func (s *Client) SearchHosts(ctx context.Context, query string, page int) (*Sear
 	if err != nil {
 		return nil, fmt.Errorf("SearchHosts: build request: %w", err)
 	}
-	//nolint:gosec // G704: base URL is set at construction time from application config, not from request input.
 	res, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("SearchHosts: %w", sanitizeErr(err))
@@ -122,7 +122,6 @@ func (s *Client) GetHostByIP(ctx context.Context, ip string) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GetHostByIP %s: build request: %w", ip, err)
 	}
-	//nolint:gosec // G704: base URL is set at construction time from application config, not from request input.
 	res, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GetHostByIP %s: %w", ip, sanitizeErr(err))
@@ -155,4 +154,49 @@ func (s *Client) HostSearch(ctx context.Context, q string, page int) (*SearchRes
 // Deprecated: Use GetHostByIP instead.
 func (s *Client) HostLookup(ctx context.Context, ip string) (*Host, error) {
 	return s.GetHostByIP(ctx, ip)
+}
+
+// CountResult holds the total number of results for a search query.
+type CountResult struct {
+	Total  int                     `json:"total"`
+	Facets map[string][]FacetCount `json:"facets"`
+}
+
+// CountHosts returns the number of results for a query without consuming query credits.
+// Optionally accepts facet names (e.g. "country", "org") to include aggregations.
+func (s *Client) CountHosts(ctx context.Context, query string, facets ...string) (*CountResult, error) {
+	v := url.Values{}
+	v.Set("key", s.apiKey)
+	v.Set("query", query)
+	if len(facets) > 0 {
+		v.Set("facets", strconv.Itoa(len(facets))+":"+joinFacets(facets))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/shodan/host/count?"+v.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("CountHosts: build request: %w", err)
+	}
+	res, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("CountHosts: %w", sanitizeErr(err))
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("CountHosts: shodan API error: %s", res.Status)
+	}
+
+	var ret CountResult
+	if err := json.NewDecoder(res.Body).Decode(&ret); err != nil {
+		return nil, fmt.Errorf("CountHosts: decode response: %w", err)
+	}
+	return &ret, nil
+}
+
+// joinFacets formats a slice of facet names for the API (comma-separated, each prefixed with count).
+func joinFacets(facets []string) string {
+	prefixed := make([]string, len(facets))
+	for i, f := range facets {
+		prefixed[i] = "10:" + f
+	}
+	return strings.Join(prefixed, ",")
 }

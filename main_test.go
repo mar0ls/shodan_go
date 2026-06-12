@@ -453,3 +453,185 @@ func TestRunSearch(t *testing.T) {
 		}
 	})
 }
+
+// ─── runCount ────────────────────────────────────────────────────────────────
+
+func TestRunCount(t *testing.T) {
+	t.Run("prints total", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"total":1337,"facets":{}}`)
+		})
+		var buf bytes.Buffer
+		err := runCount(context.Background(), c, []string{"nginx"}, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "1337") {
+			t.Errorf("expected 1337 in output, got: %s", buf.String())
+		}
+	})
+
+	t.Run("missing query returns error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runCount(context.Background(), c, []string{}, &buf)
+		if err == nil {
+			t.Fatal("expected error for missing query, got nil")
+		}
+	})
+
+	t.Run("api error propagated", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		})
+		var buf bytes.Buffer
+		err := runCount(context.Background(), c, []string{"nginx"}, &buf)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
+// ─── runDNS ───────────────────────────────────────────────────────────────────
+
+func TestRunDNS(t *testing.T) {
+	t.Run("prints domain info", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"domain":"example.com","subdomains":["www","mail"],"data":[{"subdomain":"www","type":"A","value":"1.2.3.4","last_seen":"2024-01-01"}],"tags":[],"more":false}`)
+		})
+		var buf bytes.Buffer
+		err := runDNS(context.Background(), c, []string{"example.com"}, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "example.com") {
+			t.Errorf("expected domain in output, got: %s", out)
+		}
+		if !strings.Contains(out, "www") {
+			t.Errorf("expected subdomain in output, got: %s", out)
+		}
+	})
+
+	t.Run("missing domain returns error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runDNS(context.Background(), c, []string{}, &buf)
+		if err == nil {
+			t.Fatal("expected error for missing domain, got nil")
+		}
+	})
+}
+
+// ─── runResolve ──────────────────────────────────────────────────────────────
+
+func TestRunResolve(t *testing.T) {
+	t.Run("prints hostname to ip", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"google.com":"142.250.74.46"}`)
+		})
+		var buf bytes.Buffer
+		err := runResolve(context.Background(), c, []string{"google.com"}, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "google.com") || !strings.Contains(out, "142.250.74.46") {
+			t.Errorf("unexpected output: %s", out)
+		}
+	})
+
+	t.Run("missing args returns error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runResolve(context.Background(), c, []string{}, &buf)
+		if err == nil {
+			t.Fatal("expected error for missing args, got nil")
+		}
+	})
+}
+
+// ─── runReverse ──────────────────────────────────────────────────────────────
+
+func TestRunReverse(t *testing.T) {
+	t.Run("prints ip to hostnames", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"8.8.8.8":["dns.google"]}`)
+		})
+		var buf bytes.Buffer
+		err := runReverse(context.Background(), c, []string{"8.8.8.8"}, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "8.8.8.8") || !strings.Contains(out, "dns.google") {
+			t.Errorf("unexpected output: %s", out)
+		}
+	})
+
+	t.Run("no PTR record shown gracefully", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{}`)
+		})
+		var buf bytes.Buffer
+		err := runReverse(context.Background(), c, []string{"1.2.3.4"}, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "no PTR record") {
+			t.Errorf("expected 'no PTR record' in output, got: %s", buf.String())
+		}
+	})
+
+	t.Run("missing args returns error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runReverse(context.Background(), c, []string{}, &buf)
+		if err == nil {
+			t.Fatal("expected error for missing args, got nil")
+		}
+	})
+}
+
+// ─── runMyIP ─────────────────────────────────────────────────────────────────
+
+func TestRunMyIP(t *testing.T) {
+	t.Run("prints public ip", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `"203.0.113.42"`)
+		})
+		var buf bytes.Buffer
+		err := runMyIP(context.Background(), c, &buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "203.0.113.42") {
+			t.Errorf("expected IP in output, got: %s", buf.String())
+		}
+	})
+
+	t.Run("api error propagated", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		})
+		var buf bytes.Buffer
+		err := runMyIP(context.Background(), c, &buf)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
