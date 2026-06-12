@@ -9,7 +9,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 
 SOURCES = [
     PROJECT_ROOT / "main.go",
-    *sorted((PROJECT_ROOT / "api").glob("*.go")),
+    *sorted(p for p in (PROJECT_ROOT / "api").glob("*.go") if not p.name.endswith("_test.go")),
 ]
 OUT_DIR = PROJECT_ROOT / "docs"
 OUT_FILE = OUT_DIR / "DOCUMENTATION.md"
@@ -24,10 +24,16 @@ CATEGORIES = [
         ("type", "searchOptions"),
         ("type", "searchOutput"),
         ("func", "parseSearchArgs"),
+        ("func", "validateOutPath"),
         ("func", "formatLine"),
         ("func", "fetchPageWithRetry"),
         ("func", "runHost"),
         ("func", "runSearch"),
+        ("func", "runCount"),
+        ("func", "runDNS"),
+        ("func", "runResolve"),
+        ("func", "runReverse"),
+        ("func", "runMyIP"),
         ("func", "main"),
     }),
     ("API Client Core", {
@@ -45,11 +51,19 @@ CATEGORIES = [
         ("type", "Host"),
         ("type", "FacetCount"),
         ("type", "SearchResult"),
+        ("type", "CountResult"),
+        ("type", "DomainInfo"),
+        ("type", "DNSRecord"),
     }),
     ("API Operations", {
         ("func", "GetAPIInfo"),
         ("func", "SearchHosts"),
         ("func", "GetHostByIP"),
+        ("func", "CountHosts"),
+        ("func", "GetDomain"),
+        ("func", "ResolveHostnames"),
+        ("func", "ReverseIPs"),
+        ("func", "MyIP"),
     }),
     ("Compatibility Aliases", {
         ("func", "APIInfo"),
@@ -64,18 +78,33 @@ COMMAND_REFERENCE = [
     ("search [--page N] <query>", "Run one paginated search request and print results."),
     ("search --all <query>", "Iterate all pages for a query (consumes query credits)."),
     ("search --out <file> <query>", "Save full JSON output to a file with safe path checks."),
+    ("count <query>", "Return only the total number of matches (does not consume query credits)."),
+    ("dns [--all-records] <domain>", "Fetch DNS records and subdomains for a domain."),
+    ("resolve <hostname> [...]", "Resolve one or more hostnames to IP addresses."),
+    ("reverse <ip> [...]", "Reverse-resolve one or more IPs to hostnames."),
+    ("myip", "Return your public IP as seen by Shodan."),
 ]
 
 API_CONTRACTS = [
     ("GetAPIInfo(ctx)", "ctx context.Context", "*APIInfo", "network error, non-200 API status, JSON decode error"),
     ("SearchHosts(ctx, query, page)", "ctx context.Context, query string, page >= 1", "*SearchResult", "network error, non-200 API status, JSON decode error"),
     ("GetHostByIP(ctx, ip)", "ctx context.Context, IPv4/IPv6 as string", "*Host", "network error, non-200 API status, JSON decode error"),
+    ("CountHosts(ctx, query, facets...)", "ctx context.Context, query string, optional facets", "*CountResult", "network error, non-200 API status, JSON decode error"),
+    ("GetDomain(ctx, domain)", "ctx context.Context, domain string", "*DomainInfo", "network error, non-200 API status, JSON decode error"),
+    ("ResolveHostnames(ctx, hostnames...)", "ctx context.Context, one or more hostnames", "map[string]string", "network error, non-200 API status, JSON decode error"),
+    ("ReverseIPs(ctx, ips...)", "ctx context.Context, one or more IPs", "map[string][]string", "network error, non-200 API status, JSON decode error"),
+    ("MyIP(ctx)", "ctx context.Context", "string", "network error, non-200 API status, JSON decode error"),
 ]
 
 OPERATION_MODEL_LINKS = [
     ("GetAPIInfo()", "APIInfo"),
     ("SearchHosts()", "SearchResult, Host, FacetCount"),
     ("GetHostByIP()", "Host, HostLocation, HostHTTP, Meta"),
+    ("CountHosts()", "CountResult, FacetCount"),
+    ("GetDomain()", "DomainInfo, DNSRecord"),
+    ("ResolveHostnames()", "map[string]string"),
+    ("ReverseIPs()", "map[string][]string"),
+    ("MyIP()", "string"),
 ]
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
@@ -199,22 +228,12 @@ def group_blocks(blocks: list[dict]):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def slugify(text: str) -> str:
-    """Convert a section title to a GitHub-flavoured Markdown anchor slug.
-
-    Handles Unicode by stripping diacritics, lowercasing, replacing spaces
-    with hyphens, and dropping everything that isn't alphanumeric or a hyphen.
-    Much more robust than a handful of manual .replace() calls.
-    """
-    # Normalise to NFD so accented chars decompose (é → e + combining accent)
+    """Return a GitHub-flavoured Markdown anchor slug for a heading."""
     nfd = unicodedata.normalize("NFD", text)
-    # Drop combining characters (the accent parts)
     ascii_text = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
     lower = ascii_text.lower()
-    # Replace spaces and & with hyphens
     slug = re.sub(r"[\s&]+", "-", lower)
-    # Drop anything that isn't a letter, digit, or hyphen
     slug = re.sub(r"[^a-z0-9\-]", "", slug)
-    # Collapse multiple hyphens
     slug = re.sub(r"-+", "-", slug).strip("-")
     return "#" + slug
 
@@ -305,7 +324,7 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
         f.write("- Network errors are sanitized — the API key is **never** included in error messages.\n")
         f.write("- Search pagination uses 100 results per page; `--all` consumes additional query credits.\n")
         f.write("- CLI exits early when `SHODAN_API_KEY` is missing.\n")
-        f.write("- `--out` path is sanitized: only relative paths inside the current directory are accepted.\n\n")
+        f.write("- `--out` path is sanitized: absolute paths and relative paths are allowed, but upward traversal (`..`) is rejected.\n\n")
         f.write("### Security notes\n\n")
         f.write("| Concern | Mitigation |\n")
         f.write("|---------|------------|\n")

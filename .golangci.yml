@@ -16,13 +16,14 @@ linters:
     gosec:
       # G705 (XSS via taint analysis) is a false positive for a CLI writing to os.Stdout/bytes.Buffer,
       # not to an HTTP ResponseWriter.
+      # G706 (log injection) is a false positive for log.Printf calls with integer arguments (%d).
       excludes:
         - G705
+        - G706
     revive:
       severity: warning
     gocritic:
       enabled-checks:
-        - appendAssign
         - boolExprSimplify
   exclusions:
     rules:

@@ -26,7 +26,7 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient creates a Shodan client with a sane default timeout.
+// NewClient returns a Client with a 30 s HTTP timeout.
 func NewClient(apiKey string, opts ...Option) *Client {
 	c := &Client{
 		apiKey:  apiKey,

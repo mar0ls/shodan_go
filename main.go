@@ -1,4 +1,4 @@
-// Command main is a small CLI for querying Shodan host and search endpoints.
+// Command main is a CLI for querying Shodan host, search, and DNS endpoints.
 package main
 
 import (
@@ -26,24 +26,37 @@ const (
 
 var usage string
 
+// init builds the CLI usage text using the current binary name.
 func init() {
 	bin := filepath.Base(os.Args[0])
 	usage = fmt.Sprintf(`Usage:
-	%s host <ip>                                  — details for a specific host
-	%s search [options] <query>                   — host search (100 results/page)
+  %s host <ip>                        — details for a specific host
+  %s search [options] <query>         — host search (100 results/page)
+  %s count <query>                    — count results without using credits
+  %s dns [--all-records] <domain>     — DNS records and subdomains
+  %s resolve <hostname> [...]         — resolve hostnames to IPs
+  %s reverse <ip> [...]               — reverse DNS lookup for IPs
+  %s myip                             — show your public IP
 
 Search options:
-	-page/--page N      fetch a specific page (default: 1)
-	-all/--all           fetch all pages (warning: consumes credits)
-	-out/--out <file>    save JSON output to a file (relative or absolute path)
+  --page N        fetch a specific page (default: 1)
+  --all           fetch all pages (warning: consumes credits)
+  --out <file>    save JSON output to a file (relative or absolute path)
 
 General flags:
-	-h, --help           show this help message
+  -h, --help      show this help message
 
 Examples:
   %s search "webcam country:PL"
   %s search --page 3 "apache country:PL"
-  %s search --all --out /tmp/wyniki.json "apache country:PL"`, bin, bin, bin, bin, bin)
+  %s search --all --out /tmp/results.json "apache country:PL"
+  %s count "nginx country:DE"
+  %s dns example.com
+  %s resolve google.com cloudflare.com
+  %s reverse 8.8.8.8 1.1.1.1
+  %s myip`,
+		bin, bin, bin, bin, bin, bin, bin,
+		bin, bin, bin, bin, bin, bin, bin, bin)
 }
 
 // searchOptions stores parsed flags and query text for the search command.
@@ -54,7 +67,7 @@ type searchOptions struct {
 	Query string
 }
 
-// searchOutput is what we save to --out as a full JSON snapshot.
+// searchOutput is the JSON snapshot written to --out.
 type searchOutput struct {
 	Query      string        `json:"query"`
 	Total      int           `json:"total"`
@@ -159,7 +172,7 @@ func fetchPageWithRetry(ctx context.Context, s *shodan.Client, query string, pag
 		if err == nil {
 			return r, nil
 		}
-		log.Printf("page %d attempt %d failed: %v", page, attempt, err) //nolint:gosec // G706: error originates from Shodan API, not user input
+		log.Printf("page %d attempt %d failed: %v", page, attempt, err)
 		if attempt < maxRetries && baseDelay > 0 {
 			wait := time.Duration(attempt) * baseDelay
 			log.Printf("retrying in %v...", wait)
@@ -179,7 +192,13 @@ func runHost(ctx context.Context, s *shodan.Client, args []string, w io.Writer) 
 	_, _ = fmt.Fprintf(w, "IP:      %s\n", host.IPString)
 	_, _ = fmt.Fprintf(w, "Org:     %s\n", host.Org)
 	_, _ = fmt.Fprintf(w, "ISP:     %s\n", host.ISP)
-	_, _ = fmt.Fprintf(w, "Country: %s\n", host.Location.CountryName)
+	country := host.Location.CountryName
+	if country == "" {
+		country = host.Location.CountryCode
+	}
+	if country != "" {
+		_, _ = fmt.Fprintf(w, "Country: %s\n", country)
+	}
 	if host.OS != nil && *host.OS != "" {
 		_, _ = fmt.Fprintf(w, "OS:      %s\n", *host.OS)
 	}
@@ -204,7 +223,6 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 		startPage = 1
 	}
 
-	// First request tells us total results/pages.
 	first, err := s.SearchHosts(ctx, opts.Query, startPage)
 	if err != nil {
 		return err
@@ -221,12 +239,11 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 			if pagePause > 0 {
 				time.Sleep(pagePause)
 			}
-
 			r, fetchErr := fetchPageWithRetry(ctx, s, opts.Query, p, retryBase)
 			if fetchErr != nil {
-				log.Printf("error while fetching page %d: %v", p, fetchErr)                               //nolint:gosec // G706: error from Shodan API, not user input
-				log.Printf("continuing with %d results collected so far (pages 1-%d)", len(matches), p-1) //nolint:gosec // G706: integer values, safe
-				log.Printf("tip: re-run with --page %d --all to resume later", p)                         //nolint:gosec // G706: integer values, safe
+				log.Printf("error while fetching page %d: %v", p, fetchErr)
+				log.Printf("continuing with %d results collected so far (pages 1-%d)", len(matches), p-1)
+				log.Printf("tip: re-run with --page %d --all to resume later", p)
 				break
 			}
 			matches = append(matches, r.Matches...)
@@ -256,7 +273,6 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 			return fmt.Errorf("marshal output: %w", err)
 		}
 		outputPath := filepath.Clean(opts.Out)
-		//nolint:gosec // G304: path validated by validateOutPath above; user explicitly provides this path.
 		if err := os.WriteFile(outputPath, data, 0o600); err != nil {
 			return fmt.Errorf("write output file: %w", err)
 		}
@@ -266,6 +282,125 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 	for _, host := range matches {
 		_, _ = fmt.Fprintln(w, formatLine(host))
 	}
+	return nil
+}
+
+// runCount prints the number of results for a query without consuming query credits.
+func runCount(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	query := strings.TrimSpace(strings.Join(args, " "))
+	if query == "" {
+		return fmt.Errorf("missing query, e.g. count \"apache country:PL\"")
+	}
+	result, err := s.CountHosts(ctx, query)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "Total results: %d\n", result.Total)
+	return nil
+}
+
+// runDNS prints DNS records and subdomains for a domain.
+// Accepts optional --all-records flag to show all records instead of the default cap.
+func runDNS(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	allRecords := false
+	filtered := args[:0]
+	for _, a := range args {
+		if a == "--all-records" || a == "-all-records" {
+			allRecords = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
+	if len(args) == 0 {
+		return fmt.Errorf("missing domain, e.g. dns example.com")
+	}
+	domain := args[0]
+	info, err := s.GetDomain(ctx, domain)
+	if err != nil {
+		return err
+	}
+	const maxRecords = 50
+
+	_, _ = fmt.Fprintf(w, "Domain:     %s\n", info.Domain)
+	if len(info.Tags) > 0 {
+		_, _ = fmt.Fprintf(w, "Tags:       %s\n", strings.Join(info.Tags, ", "))
+	}
+	if len(info.Subdomains) > 0 {
+		_, _ = fmt.Fprintf(w, "Subdomains: %d found\n", len(info.Subdomains))
+	}
+	if len(info.Data) > 0 {
+		shown := len(info.Data)
+		truncated := false
+		if !allRecords && shown > maxRecords {
+			shown = maxRecords
+			truncated = true
+		}
+		_, _ = fmt.Fprintf(w, "DNS Records (%d):\n", len(info.Data))
+		for _, rec := range info.Data[:shown] {
+			sub := rec.Subdomain
+			if sub == "" {
+				sub = "@"
+			}
+			fqdn := sub + "." + info.Domain
+			if len(fqdn) > 50 {
+				fqdn = fqdn[:47] + "..."
+			}
+			_, _ = fmt.Fprintf(w, "  %-52s %-6s %s\n", fqdn, rec.Type, rec.Value)
+		}
+		if truncated {
+			_, _ = fmt.Fprintf(w, "  ... and %d more records (use --all-records to show all)\n", len(info.Data)-maxRecords)
+		}
+	}
+	return nil
+}
+
+// runResolve resolves hostnames to IP addresses.
+func runResolve(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing hostname(s), e.g. resolve google.com cloudflare.com")
+	}
+	result, err := s.ResolveHostnames(ctx, args...)
+	if err != nil {
+		return err
+	}
+	for _, host := range args {
+		ip, ok := result[host]
+		if !ok {
+			ip = "(not found)"
+		}
+		_, _ = fmt.Fprintf(w, "%-40s %s\n", host, ip)
+	}
+	return nil
+}
+
+// runReverse performs reverse DNS lookup for IP addresses.
+func runReverse(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing IP address(es), e.g. reverse 8.8.8.8 1.1.1.1")
+	}
+	result, err := s.ReverseIPs(ctx, args...)
+	if err != nil {
+		return err
+	}
+	for _, ip := range args {
+		hosts, ok := result[ip]
+		if !ok || len(hosts) == 0 {
+			_, _ = fmt.Fprintf(w, "%-18s (no PTR record)\n", ip)
+		} else {
+			_, _ = fmt.Fprintf(w, "%-18s %s\n", ip, strings.Join(hosts, ", "))
+		}
+	}
+	return nil
+}
+
+// runMyIP prints the caller's public IP address.
+func runMyIP(ctx context.Context, s *shodan.Client, w io.Writer) error {
+	ip, err := s.MyIP(ctx)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w, ip)
 	return nil
 }
 
@@ -279,9 +414,16 @@ func main() {
 		}
 	}
 
-	if len(os.Args) < 3 {
+	if len(os.Args) < 2 {
 		log.Fatalln(usage)
 	}
+
+	// myip only needs 1 argument (the command itself)
+	cmd := os.Args[1]
+	if cmd != "myip" && len(os.Args) < 3 {
+		log.Fatalln(usage)
+	}
+
 	apiKey := os.Getenv("SHODAN_API_KEY")
 	if apiKey == "" {
 		log.Fatalln("SHODAN_API_KEY environment variable not set")
@@ -290,19 +432,42 @@ func main() {
 	ctx := context.Background()
 	s := shodan.NewClient(apiKey)
 
-	info, err := s.GetAPIInfo(ctx)
-	if err != nil {
-		log.Fatalln(err)
+	// Show credits only for commands that consume them.
+	if cmd == "host" || cmd == "search" {
+		info, err := s.GetAPIInfo(ctx)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Printf("Query Credits: %d\nScan Credits:  %d\n\n", info.QueryCredits, info.ScanCredits)
 	}
-	fmt.Printf("Query Credits: %d\nScan Credits:  %d\n\n", info.QueryCredits, info.ScanCredits)
 
-	switch os.Args[1] {
+	switch cmd {
 	case "host":
 		if err := runHost(ctx, s, os.Args[2:], os.Stdout); err != nil {
 			log.Fatalln(err)
 		}
 	case "search":
 		if err := runSearch(ctx, s, os.Args[2:], os.Stdout, pagePauseDelay, retryBaseDelay); err != nil {
+			log.Fatalln(err)
+		}
+	case "count":
+		if err := runCount(ctx, s, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalln(err)
+		}
+	case "dns":
+		if err := runDNS(ctx, s, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalln(err)
+		}
+	case "resolve":
+		if err := runResolve(ctx, s, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalln(err)
+		}
+	case "reverse":
+		if err := runReverse(ctx, s, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalln(err)
+		}
+	case "myip":
+		if err := runMyIP(ctx, s, os.Stdout); err != nil {
 			log.Fatalln(err)
 		}
 	default:

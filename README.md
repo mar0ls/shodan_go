@@ -7,30 +7,26 @@
 [![Release](https://img.shields.io/github/v/release/mar0ls/shodan_go)](https://github.com/mar0ls/shodan_go/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-DOCUMENTATION.md-brightgreen)](docs/DOCUMENTATION.md)
 
-A lightweight command-line interface for querying the Shodan API in Go.
+A command-line interface for the Shodan API written in Go.
 
 [Go 1.25+](https://go.dev/doc/install) • [Code Documentation](docs/DOCUMENTATION.md)
 
 ## Overview
 
-`shodan_go` provides a small, script-friendly CLI for:
-- checking account credits,
-- looking up a single host,
-- searching hosts with pagination,
-- exporting full search results to JSON.
+`shodan_go` exposes the most common Shodan endpoints through a single binary:
+account info, host lookup, paginated search, count, DNS records, hostname
+resolution, reverse DNS and your public IP.
 
-## Key Features
+## Features
 
-- Minimal CLI with two core commands: `host` and `search`
-- Context-aware HTTP client with 30 s timeout and cancellation support
-- API key encoded via `url.Values` — never interpolated raw into URLs
-- API key stripped from error messages (`sanitizeErr` removes it from `*url.Error`)
-- IP path encoded with `url.PathEscape` to prevent URL manipulation
-- Search pagination support (`--page`, `--all`)
-- JSON export with output-path sanitization (`--out`)
-- Automatic retry with exponential backoff for paginated fetches
-- Linting and formatter support via `golangci-lint`
-- Auto-generated developer docs from source comments
+- Seven commands: `host`, `search`, `count`, `dns`, `resolve`, `reverse`, `myip`
+- `context.Context` on every request; 30 s HTTP client timeout
+- API key passed via `url.Values`, never via `fmt.Sprintf`
+- API key stripped from error messages by `sanitizeErr`
+- IP / domain path components encoded with `url.PathEscape`
+- Search pagination (`--page`, `--all`) with retry and exponential backoff
+- JSON export via `--out`, with path sanitization (no `..` traversal)
+- Generated reference docs in [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)
 
 ## Requirements
 
@@ -40,9 +36,9 @@ A lightweight command-line interface for querying the Shodan API in Go.
 
 ## Installation
 
-### Download pre-built binary (recommended)
+### Download pre-built binary
 
-Download the latest release from [GitHub Releases](https://github.com/mar0ls/shodan_go/releases/latest):
+Grab the latest release from [GitHub Releases](https://github.com/mar0ls/shodan_go/releases/latest):
 
 ```bash
 # Linux (amd64)
@@ -64,15 +60,13 @@ cd shodan_go
 go build -o shodan-go .
 ```
 
-Run directly in development mode:
+Or run from source without building:
 
 ```bash
 go run .
 ```
 
 ## Security
-
-The following security measures are built into the client and CLI:
 
 | Concern | Mitigation |
 |---------|------------|
@@ -83,7 +77,7 @@ The following security measures are built into the client and CLI:
 | Long-running / hanging requests | Every HTTP request uses `context.Context` + 30 s client timeout |
 | Secret in source code | `SHODAN_API_KEY` is read from environment only — never hardcoded |
 
-> **Never commit your `SHODAN_API_KEY`.** Add `.env` to `.gitignore` and use your hosting platform's secret manager for production deployments.
+> Do not commit your `SHODAN_API_KEY`. Add `.env` to `.gitignore` and load it from your shell or CI secret store.
 
 ## Configuration
 
@@ -109,6 +103,11 @@ General form:
 |---|---|
 | `host <ip>` | Show detailed information for one host IP |
 | `search [options] <query>` | Search hosts by Shodan query |
+| `count <query>` | Count results **without consuming query credits** |
+| `dns [--all-records] <domain>` | DNS records and subdomains for a domain |
+| `resolve <hostname> [...]` | Resolve one or more hostnames to IP addresses |
+| `reverse <ip> [...]` | Reverse DNS lookup for one or more IPs |
+| `myip` | Show your public IP address as seen by Shodan |
 
 ### Search options
 
@@ -137,62 +136,263 @@ General form:
 # Search all pages and export to absolute path
 ./shodan-go search --all --out /tmp/results.json "webcam country:PL"
 
+# Count results without using credits
+./shodan-go count "apache country:PL"
+
+# DNS records and subdomains
+./shodan-go dns example.com
+
+# DNS records and subdomains (without output cap)
+./shodan-go dns --all-records example.com
+
+# Resolve hostnames to IPs
+./shodan-go resolve google.com cloudflare.com
+
+# Reverse DNS lookup
+./shodan-go reverse 8.8.8.8 1.1.1.1
+
+# Your public IP
+./shodan-go myip
+
 # Show help
 ./shodan-go --help
 
 # Resume a previously interrupted search from page 38
 ./shodan-go search --page 38 --all --out results.json "webcam country:PL"
 
-# Example of listing all ips from results JSON
+# Extract all IPs from JSON export
 jq -r '.. | .ip_str? // empty' results.json | sort -u
 ```
 
 ### Error handling
 
-When fetching multiple pages with `--all`, the CLI applies automatic safeguards:
+With `--all` the CLI applies these safeguards between pages:
 
-- **Rate-limit delay** — 1-second pause between page requests to avoid API throttling.
-- **Retry with backoff** — each failed page is retried up to 3 times with increasing delay (2 s, 4 s, 6 s).
-- **Partial results preserved** — if a page fails after all retries, already collected results are kept and output normally (printed and/or saved with `--out`).
-- **Resume hint** — on failure the CLI prints the page number so you can continue later with `--page N --all`.
-``ex.: ./shodan-go search --page 38 --all --out results.json "webcam country:PL"``
+- **Rate-limit delay** — 1-second pause between page requests.
+- **Retry with backoff** — each failed page is retried up to 3 times (2 s, 4 s, 6 s).
+- **Partial results preserved** — collected pages are printed and saved with `--out` even if a later page fails.
+- **Resume hint** — on failure the CLI logs the page number; re-run with `--page N --all` to continue.
+
+Example resume command:
+
+```bash
+./shodan-go search --page 38 --all --out results.json "webcam country:PL"
+```
 
 ## Testing
 
-Run the full test suite (includes race-condition detection):
+Run the full test suite with the race detector:
 
 ```bash
 go test -race ./...
 ```
 
-Generate a coverage report:
+Coverage report:
 
 ```bash
 go test -race -coverprofile=coverage.out ./...
-go tool cover -func=coverage.out   # summary per function
-go tool cover -html=coverage.out   # interactive HTML report
+go tool cover -func=coverage.out
+go tool cover -html=coverage.out
 ```
 
-Current coverage: ~77% overall (`shodan/api` ~82%, `shodan` main package ~75%).
-The zero-coverage items are all deprecated alias wrappers and the `main()` entry point
-(which requires a live API key).
+Overall coverage is around 76 %. Uncovered lines are the deprecated alias
+wrappers and `main()` (it needs a live API key).
 
-## Developer Tools
-
-Format, lint, and generate docs:
+## Lint and docs
 
 ```bash
-# Lint + format checks (configured in .golangci.yml)
 golangci-lint run -c ./.golangci.yml
-
-# Generate docs from source comments
 ./scripts/generate_docs.py
+```
+
+## Scripting Recipes
+
+Bash and PowerShell snippets for common automation tasks.
+
+### 1) Nightly count report (no query credits consumed)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+query='apache country:PL'
+timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+total="$(./shodan-go count "$query" | awk '/Total results:/ {print $3}')"
+printf '%s query=%q total=%s\n' "$timestamp" "$query" "$total" >> shodan-counts.log
+```
+
+### 2) Save full search snapshot to JSON and extract unique IPs
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+query='nginx country:DE'
+outfile="search-$(date +%F).json"
+
+./shodan-go search --all --out "$outfile" "$query"
+jq -r '.. | .ip_str? // empty' "$outfile" | sort -u > ips.txt
+echo "Saved JSON: $outfile"
+echo "Unique IPs: $(wc -l < ips.txt)"
+```
+
+### 3) Bulk hostname resolution from a file
+
+Input file (`hosts.txt`):
+
+```text
+google.com
+cloudflare.com
+example.org
+```
+
+Script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+mapfile -t hosts < <(grep -v '^\s*$' hosts.txt)
+./shodan-go resolve "${hosts[@]}" | tee resolved.txt
+```
+
+### 4) Reverse DNS enrichment for a list of IPs
+
+Input file (`ips.txt`):
+
+```text
+8.8.8.8
+1.1.1.1
+9.9.9.9
+```
+
+Script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+mapfile -t ips < <(grep -v '^\s*$' ips.txt)
+./shodan-go reverse "${ips[@]}" | tee reverse.txt
+```
+
+### 5) DNS inventory to file
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+domain='google.com'
+
+# Capped output (50 records) — readable in a terminal
+./shodan-go dns "$domain" > "dns-${domain}.txt"
+
+# Full output — use for further processing
+./shodan-go dns --all-records "$domain" > "dns-${domain}-all.txt"
+```
+
+### 6) Retry wrapper for unstable API windows (503/timeout)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+run_with_retry() {
+	local max_attempts=5
+	local attempt=1
+	local delay=2
+
+	while true; do
+		if "$@"; then
+			return 0
+		fi
+		if (( attempt >= max_attempts )); then
+			echo "command failed after $attempt attempts: $*" >&2
+			return 1
+		fi
+		echo "attempt $attempt failed, retrying in ${delay}s..." >&2
+		sleep "$delay"
+		attempt=$((attempt + 1))
+		delay=$((delay * 2))
+	done
+}
+
+run_with_retry ./shodan-go host 8.8.8.8
+```
+
+### 7) Smoke test in CI
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${SHODAN_API_KEY:?SHODAN_API_KEY is required}"
+
+./shodan-go myip > /dev/null
+./shodan-go count 'ssl cert.subject.cn:example.com' > /dev/null
+echo "Shodan CLI checks: OK"
+```
+
+### 8) PowerShell equivalents (Windows)
+
+```powershell
+$ErrorActionPreference = "Stop"
+
+# Requires SHODAN_API_KEY in environment
+if (-not $env:SHODAN_API_KEY) {
+    throw "SHODAN_API_KEY is required"
+}
+
+# Count report
+$query = "apache country:PL"
+$countLine = .\shodan-go.exe count $query | Select-String "Total results:"
+"{0} query='{1}' {2}" -f (Get-Date).ToUniversalTime().ToString("o"), $query, $countLine >> shodan-counts.log
+
+# DNS output (capped and full)
+.\shodan-go.exe dns google.com | Out-File -Encoding utf8 dns-google.txt
+.\shodan-go.exe dns --all-records google.com | Out-File -Encoding utf8 dns-google-all.txt
+```
+
+### 9) Makefile shortcuts for recurring tasks
+
+Create `Makefile`:
+
+```makefile
+SHODAN ?= ./shodan-go
+QUERY ?= apache country:PL
+DOMAIN ?= example.com
+OUT ?= results.json
+
+.PHONY: shodan-count shodan-search shodan-dns shodan-dns-all shodan-myip
+
+shodan-count:
+	$(SHODAN) count "$(QUERY)"
+
+shodan-search:
+	$(SHODAN) search --all --out "$(OUT)" "$(QUERY)"
+
+shodan-dns:
+	$(SHODAN) dns "$(DOMAIN)"
+
+shodan-dns-all:
+	$(SHODAN) dns --all-records "$(DOMAIN)"
+
+shodan-myip:
+	$(SHODAN) myip
+```
+
+Usage examples:
+
+```bash
+make shodan-count QUERY='nginx country:DE'
+make shodan-search QUERY='ssl:cloudflare' OUT=cloudflare.json
+make shodan-dns DOMAIN=google.com
 ```
 
 ## Building and Distribution
 
-Use helper scripts for local/cross-platform builds. Both scripts resolve the
-project root automatically, so you can run them from any working directory.
+Helper scripts under `scripts/` build local and cross-platform binaries.
 
 ### POSIX (Linux/macOS)
 
@@ -234,11 +434,13 @@ project root automatically, so you can run them from any working directory.
 ├── api/
 │   ├── shodan.go            # Client struct, Option pattern, sanitizeErr
 │   ├── api.go               # GetAPIInfo
-│   ├── host.go              # SearchHosts, GetHostByIP, host types
-│   └── client_test.go       # httptest-based API tests
+│   ├── host.go              # SearchHosts, GetHostByIP, CountHosts, host types
+│   ├── dns.go               # GetDomain, ResolveHostnames, ReverseIPs, MyIP
+│   ├── client_test.go       # httptest-based API tests
+│   └── dns_test.go          # httptest-based DNS/count API tests
 ├── docs/                    # Auto-generated documentation
 ├── scripts/                 # Build and docs generation helpers
-├── main.go                  # CLI entrypoint (host / search commands)
+├── main.go                  # CLI entrypoint (all commands)
 ├── main_test.go             # Unit tests for CLI functions
 ├── .golangci.yml            # Lint/formatter configuration
 └── go.mod
@@ -246,12 +448,9 @@ project root automatically, so you can run them from any working directory.
 
 ## Documentation
 
-Detailed code-level docs are generated to:
-
-- [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)
-
+- [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md) — generated reference for all exported symbols.
 
 ## Contributing
 
-Issues and pull requests are welcome.
-Please include a clear description and run lint before submitting changes.
+Issues and pull requests are welcome. Run `go test -race ./...` and
+`golangci-lint run ./...` before opening a PR.
