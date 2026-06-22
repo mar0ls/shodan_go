@@ -77,8 +77,6 @@ go run .
 | Long-running / hanging requests | Every HTTP request uses `context.Context` + 30 s client timeout |
 | Secret in source code | `SHODAN_API_KEY` is read from environment only — never hardcoded |
 
-> Do not commit your `SHODAN_API_KEY`. Add `.env` to `.gitignore` and load it from your shell or CI secret store.
-
 ## Configuration
 
 Set your API key via environment variable:
@@ -195,7 +193,7 @@ go tool cover -func=coverage.out
 go tool cover -html=coverage.out
 ```
 
-Overall coverage is around 76 %. Uncovered lines are the deprecated alias
+Overall coverage is around 74-79 %. Uncovered lines are the deprecated alias
 wrappers and `main()` (it needs a live API key).
 
 ## Lint and docs

@@ -336,6 +336,28 @@ func TestRunHost(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("missing ip returns error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runHost(context.Background(), c, []string{}, &buf)
+		if err == nil {
+			t.Fatal("expected error for missing IP, got nil")
+		}
+	})
+
+	t.Run("extra ip arguments return error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runHost(context.Background(), c, []string{"8.8.8.8", "1.1.1.1"}, &buf)
+		if err == nil {
+			t.Fatal("expected error for too many IP args, got nil")
+		}
+	})
 }
 
 // ─── runSearch ───────────────────────────────────────────────────────────────
@@ -525,6 +547,17 @@ func TestRunDNS(t *testing.T) {
 		err := runDNS(context.Background(), c, []string{}, &buf)
 		if err == nil {
 			t.Fatal("expected error for missing domain, got nil")
+		}
+	})
+
+	t.Run("extra domain arguments return error", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		var buf bytes.Buffer
+		err := runDNS(context.Background(), c, []string{"example.com", "extra.example.com"}, &buf)
+		if err == nil {
+			t.Fatal("expected error for too many domain args, got nil")
 		}
 	})
 }
