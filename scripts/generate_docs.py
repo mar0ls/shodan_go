@@ -41,7 +41,6 @@ CATEGORIES = [
         ("type", "Option"),
         ("func", "NewClient"),
         ("func", "WithBaseURL"),
-        "BaseURL",
     }),
     ("API Models", {
         ("type", "APIInfo"),

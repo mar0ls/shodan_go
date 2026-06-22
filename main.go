@@ -184,6 +184,12 @@ func fetchPageWithRetry(ctx context.Context, s *shodan.Client, query string, pag
 
 // runHost fetches and prints details for a single IP.
 func runHost(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing IP address, e.g. host 8.8.8.8")
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("too many arguments for host; expected exactly 1 IP address")
+	}
 	ip := strings.Join(args, " ")
 	host, err := s.GetHostByIP(ctx, ip)
 	if err != nil {
@@ -314,6 +320,9 @@ func runDNS(ctx context.Context, s *shodan.Client, args []string, w io.Writer) e
 	args = filtered
 	if len(args) == 0 {
 		return fmt.Errorf("missing domain, e.g. dns example.com")
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("too many arguments for dns; expected exactly 1 domain")
 	}
 	domain := args[0]
 	info, err := s.GetDomain(ctx, domain)
