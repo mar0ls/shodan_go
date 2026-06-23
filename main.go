@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,10 +19,14 @@ import (
 )
 
 const (
-	maxRetries     = 3               // maximum number of retry attempts per page fetch
-	retryBaseDelay = 2 * time.Second // base wait between retries; multiplied by attempt number
-	resultsPerPage = 100             // Shodan returns at most 100 results per page
-	pagePauseDelay = 1 * time.Second // delay between pages in --all mode to avoid rate limiting
+	maxRetries         = 3               // maximum number of retry attempts per page fetch
+	retryBaseDelay     = 2 * time.Second // base wait between retries; multiplied by attempt number
+	resultsPerPage     = 100             // Shodan returns at most 100 results per page
+	pagePauseDelay     = 1 * time.Second // delay between pages in --all mode to avoid rate limiting
+	searchFormatText   = "text"
+	searchFormatJSON   = "json"
+	searchFormatNDJSON = "ndjson"
+	searchFormatTSV    = "tsv"
 )
 
 var usage string
@@ -30,17 +35,25 @@ var usage string
 func init() {
 	bin := filepath.Base(os.Args[0])
 	usage = fmt.Sprintf(`Usage:
-  %s host <ip>                        — details for a specific host
-  %s search [options] <query>         — host search (100 results/page)
-  %s count <query>                    — count results without using credits
-  %s dns [--all-records] <domain>     — DNS records and subdomains
-  %s resolve <hostname> [...]         — resolve hostnames to IPs
-  %s reverse <ip> [...]               — reverse DNS lookup for IPs
-  %s myip                             — show your public IP
+  %s host <ip>                         - details for a specific host
+  %s host --input <file|->             - details for hosts from file/stdin
+  %s search [options] <query>         - host search (100 results/page)
+  %s count <query>                    - count results without using credits
+  %s dns [--all-records] <domain>     - DNS records and subdomains
+  %s resolve [--input <file|->] <hostname> [...]
+                                       - resolve hostnames to IPs
+  %s reverse [--input <file|->] <ip> [...]
+                                       - reverse DNS lookup for IPs
+  %s myip                             - show your public IP
 
 Search options:
   --page N        fetch a specific page (default: 1)
   --all           fetch all pages (warning: consumes credits)
+  --max-pages N   cap pages fetched in --all mode (including page 1)
+  --format F      output format: text, json, ndjson, tsv (default: text)
+  --no-header     suppress metadata/header lines in text/tsv output
+  --fail-on-empty return non-zero exit when no matches are found
+  --fail-on-partial return non-zero exit when --all cannot fetch every page
   --out <file>    save JSON output to a file (relative or absolute path)
 
 General flags:
@@ -55,32 +68,40 @@ Examples:
   %s resolve google.com cloudflare.com
   %s reverse 8.8.8.8 1.1.1.1
   %s myip`,
-		bin, bin, bin, bin, bin, bin, bin,
+		bin, bin, bin, bin, bin, bin, bin, bin,
 		bin, bin, bin, bin, bin, bin, bin, bin)
 }
 
 // searchOptions stores parsed flags and query text for the search command.
 type searchOptions struct {
-	Page  int
-	All   bool
-	Out   string
-	Query string
+	Page          int
+	All           bool
+	MaxPages      int
+	Out           string
+	Format        string
+	NoHeader      bool
+	FailOnEmpty   bool
+	FailOnPartial bool
+	Query         string
 }
 
 // searchOutput is the JSON snapshot written to --out.
 type searchOutput struct {
-	Query      string        `json:"query"`
-	Total      int           `json:"total"`
-	TotalPages int           `json:"total_pages"`
-	Page       int           `json:"page"`
-	AllPages   bool          `json:"all_pages"`
-	Count      int           `json:"count"`
-	Matches    []shodan.Host `json:"matches"`
+	Query         string        `json:"query"`
+	Total         int           `json:"total"`
+	TotalPages    int           `json:"total_pages"`
+	FetchedPages  int           `json:"fetched_pages"`
+	Page          int           `json:"page"`
+	AllPages      bool          `json:"all_pages"`
+	Partial       bool          `json:"partial"`
+	PartialReason string        `json:"partial_reason,omitempty"`
+	Count         int           `json:"count"`
+	Matches       []shodan.Host `json:"matches"`
 }
 
 // parseSearchArgs accepts flags in any order, then treats remaining tokens as query text.
 func parseSearchArgs(args []string) (searchOptions, error) {
-	opts := searchOptions{Page: 1}
+	opts := searchOptions{Page: 1, Format: searchFormatText}
 	queryParts := make([]string, 0)
 
 	for i := 0; i < len(args); i++ {
@@ -89,6 +110,15 @@ func parseSearchArgs(args []string) (searchOptions, error) {
 		switch {
 		case arg == "--all" || arg == "-all":
 			opts.All = true
+
+		case arg == "--fail-on-partial" || arg == "-fail-on-partial":
+			opts.FailOnPartial = true
+
+		case arg == "--no-header" || arg == "-no-header":
+			opts.NoHeader = true
+
+		case arg == "--fail-on-empty" || arg == "-fail-on-empty":
+			opts.FailOnEmpty = true
 
 		case arg == "--page" || arg == "-page":
 			if i+1 >= len(args) {
@@ -107,6 +137,43 @@ func parseSearchArgs(args []string) (searchOptions, error) {
 				return opts, fmt.Errorf("--page must be a number >= 1")
 			}
 			opts.Page = pageValue
+
+		case arg == "--max-pages" || arg == "-max-pages":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("missing value for --max-pages")
+			}
+			maxPagesValue, err := strconv.Atoi(args[i+1])
+			if err != nil || maxPagesValue < 1 {
+				return opts, fmt.Errorf("--max-pages must be a number >= 1")
+			}
+			opts.MaxPages = maxPagesValue
+			i++
+
+		case strings.HasPrefix(arg, "--max-pages=") || strings.HasPrefix(arg, "-max-pages="):
+			maxPagesValue, err := strconv.Atoi(strings.TrimPrefix(strings.TrimPrefix(arg, "--max-pages="), "-max-pages="))
+			if err != nil || maxPagesValue < 1 {
+				return opts, fmt.Errorf("--max-pages must be a number >= 1")
+			}
+			opts.MaxPages = maxPagesValue
+
+		case arg == "--format" || arg == "-format":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("missing value for --format")
+			}
+			format, err := normalizeSearchFormat(args[i+1])
+			if err != nil {
+				return opts, err
+			}
+			opts.Format = format
+			i++
+
+		case strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "-format="):
+			formatValue := strings.TrimPrefix(strings.TrimPrefix(arg, "--format="), "-format=")
+			format, err := normalizeSearchFormat(formatValue)
+			if err != nil {
+				return opts, err
+			}
+			opts.Format = format
 
 		case arg == "--out" || arg == "-out":
 			if i+1 >= len(args) {
@@ -145,6 +212,113 @@ func validateOutPath(path string) error {
 	return nil
 }
 
+// normalizeSearchFormat validates and canonicalizes supported search output formats.
+func normalizeSearchFormat(raw string) (string, error) {
+	format := strings.ToLower(strings.TrimSpace(raw))
+	switch format {
+	case searchFormatText, searchFormatJSON, searchFormatNDJSON, searchFormatTSV:
+		return format, nil
+	default:
+		return "", fmt.Errorf("--format must be one of: text, json, ndjson, tsv")
+	}
+}
+
+// parseInputFlagArgs parses optional --input/-input while preserving positional args.
+func parseInputFlagArgs(args []string) (positional []string, inputPath string, err error) {
+	positional = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--input" || arg == "-input":
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("missing value for --input")
+			}
+			if inputPath != "" {
+				return nil, "", fmt.Errorf("--input specified multiple times")
+			}
+			inputPath = strings.TrimSpace(args[i+1])
+			if inputPath == "" {
+				return nil, "", fmt.Errorf("--input value cannot be empty")
+			}
+			i++
+		case strings.HasPrefix(arg, "--input=") || strings.HasPrefix(arg, "-input="):
+			if inputPath != "" {
+				return nil, "", fmt.Errorf("--input specified multiple times")
+			}
+			inputPath = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(arg, "--input="), "-input="))
+			if inputPath == "" {
+				return nil, "", fmt.Errorf("--input value cannot be empty")
+			}
+		case strings.HasPrefix(arg, "--") || (strings.HasPrefix(arg, "-") && len(arg) > 1):
+			return nil, "", fmt.Errorf("unknown flag: %s", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	return positional, inputPath, nil
+}
+
+// dedupeValues removes duplicate items while preserving first-seen order.
+func dedupeValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+// readInputValues reads newline-separated values from a file or stdin ("-").
+// Empty lines and lines starting with "#" are ignored.
+func readInputValues(path string, stdin io.Reader) ([]string, error) {
+	var (
+		r       io.Reader
+		closeFn func() error
+		source  string
+	)
+	if path == "-" {
+		r = stdin
+		source = "stdin"
+	} else {
+		cleanPath := filepath.Clean(path)
+		f, err := os.Open(cleanPath)
+		if err != nil {
+			return nil, fmt.Errorf("open input file: %w", err)
+		}
+		r = f
+		source = cleanPath
+		closeFn = f.Close
+	}
+	if closeFn != nil {
+		defer func() {
+			_ = closeFn()
+		}()
+	}
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	values := make([]string, 0)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		values = append(values, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", source, err)
+	}
+	return dedupeValues(values), nil
+}
+
 // formatLine builds one readable console row for search results.
 func formatLine(host shodan.Host) string {
 	extra := host.Org
@@ -158,6 +332,30 @@ func formatLine(host shodan.Host) string {
 		extra += " | " + *host.HTTP.Title
 	}
 	return fmt.Sprintf("%-18s port %-6d %s", host.IPString, host.Port, extra)
+}
+
+// formatTSVLine renders one host row as tab-separated values for script-friendly output.
+func formatTSVLine(host shodan.Host) string {
+	title := ""
+	if host.HTTP != nil && host.HTTP.Title != nil {
+		title = *host.HTTP.Title
+	}
+	safe := func(v string) string {
+		trimmed := strings.TrimSpace(v)
+		trimmed = strings.ReplaceAll(trimmed, "\t", " ")
+		trimmed = strings.ReplaceAll(trimmed, "\n", " ")
+		trimmed = strings.ReplaceAll(trimmed, "\r", " ")
+		return trimmed
+	}
+	return fmt.Sprintf(
+		"%s\t%d\t%s\t%s\t%s\t%s",
+		safe(host.IPString),
+		host.Port,
+		safe(host.Org),
+		safe(host.Product),
+		safe(host.Version),
+		safe(title),
+	)
 }
 
 // fetchPageWithRetry fetches a single search page, retrying up to maxRetries times on failure.
@@ -182,36 +380,61 @@ func fetchPageWithRetry(ctx context.Context, s *shodan.Client, query string, pag
 	return nil, fmt.Errorf("page %d: all %d attempts failed: %w", page, maxRetries, err)
 }
 
-// runHost fetches and prints details for a single IP.
+// runHost fetches and prints details for one IP or many via --input.
 func runHost(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("missing IP address, e.g. host 8.8.8.8")
-	}
-	if len(args) > 1 {
-		return fmt.Errorf("too many arguments for host; expected exactly 1 IP address")
-	}
-	ip := strings.Join(args, " ")
-	host, err := s.GetHostByIP(ctx, ip)
+	positional, inputPath, err := parseInputFlagArgs(args)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(w, "IP:      %s\n", host.IPString)
-	_, _ = fmt.Fprintf(w, "Org:     %s\n", host.Org)
-	_, _ = fmt.Fprintf(w, "ISP:     %s\n", host.ISP)
-	country := host.Location.CountryName
-	if country == "" {
-		country = host.Location.CountryCode
+
+	var ips []string
+	if inputPath == "" {
+		if len(positional) == 0 {
+			return fmt.Errorf("missing IP address, e.g. host 8.8.8.8")
+		}
+		if len(positional) > 1 {
+			return fmt.Errorf("too many arguments for host; expected exactly 1 IP address")
+		}
+		ips = positional
+	} else {
+		if len(positional) > 0 {
+			return fmt.Errorf("host: do not mix positional IPs with --input")
+		}
+		ips, err = readInputValues(inputPath, os.Stdin)
+		if err != nil {
+			return err
+		}
+		if len(ips) == 0 {
+			return fmt.Errorf("no IP addresses found in --input source")
+		}
 	}
-	if country != "" {
-		_, _ = fmt.Fprintf(w, "Country: %s\n", country)
+
+	for i, ip := range ips {
+		host, hostErr := s.GetHostByIP(ctx, ip)
+		if hostErr != nil {
+			return hostErr
+		}
+		_, _ = fmt.Fprintf(w, "IP:      %s\n", host.IPString)
+		_, _ = fmt.Fprintf(w, "Org:     %s\n", host.Org)
+		_, _ = fmt.Fprintf(w, "ISP:     %s\n", host.ISP)
+		country := host.Location.CountryName
+		if country == "" {
+			country = host.Location.CountryCode
+		}
+		if country != "" {
+			_, _ = fmt.Fprintf(w, "Country: %s\n", country)
+		}
+		if host.OS != nil && *host.OS != "" {
+			_, _ = fmt.Fprintf(w, "OS:      %s\n", *host.OS)
+		}
+		if len(host.Hostnames) > 0 {
+			_, _ = fmt.Fprintf(w, "Hosts:   %s\n", strings.Join(host.Hostnames, ", "))
+		}
+		_, _ = fmt.Fprintf(w, "Ports:   %v\n", host.Ports)
+		if i < len(ips)-1 {
+			_, _ = fmt.Fprintln(w)
+		}
 	}
-	if host.OS != nil && *host.OS != "" {
-		_, _ = fmt.Fprintf(w, "OS:      %s\n", *host.OS)
-	}
-	if len(host.Hostnames) > 0 {
-		_, _ = fmt.Fprintf(w, "Hosts:   %s\n", strings.Join(host.Hostnames, ", "))
-	}
-	_, _ = fmt.Fprintf(w, "Ports:   %v\n", host.Ports)
 	return nil
 }
 
@@ -223,6 +446,13 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 	if err != nil {
 		return err
 	}
+	if opts.MaxPages > 0 && !opts.All {
+		return fmt.Errorf("--max-pages requires --all")
+	}
+	if opts.FailOnPartial && !opts.All {
+		return fmt.Errorf("--fail-on-partial requires --all")
+	}
+	printHeaders := opts.Format == searchFormatText && !opts.NoHeader
 
 	startPage := opts.Page
 	if opts.All {
@@ -234,14 +464,30 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 		return err
 	}
 	totalPages := int(math.Ceil(float64(first.Total) / float64(resultsPerPage)))
-	_, _ = fmt.Fprintf(w, "Found results: %d  |  Pages: %d\n\n", first.Total, totalPages)
+	if printHeaders {
+		_, _ = fmt.Fprintf(w, "Found results: %d  |  Pages: %d\n\n", first.Total, totalPages)
+	}
 
 	matches := first.Matches
+	fetchedPages := 1
+	partial := false
+	partialReason := ""
 
 	if opts.All && totalPages > 1 {
-		_, _ = fmt.Fprintf(w, "Fetching all %d pages (will consume %d credits)...\n", totalPages, totalPages-1)
-		for p := startPage + 1; p <= totalPages; p++ {
-			_, _ = fmt.Fprintf(w, "  page %d/%d\n", p, totalPages)
+		fetchUntil := totalPages
+		if opts.MaxPages > 0 && opts.MaxPages < fetchUntil {
+			fetchUntil = opts.MaxPages
+			partial = true
+			partialReason = fmt.Sprintf("stopped after %d pages due to --max-pages", fetchUntil)
+		}
+
+		if printHeaders {
+			_, _ = fmt.Fprintf(w, "Fetching %d/%d pages (will consume up to %d credits)...\n", fetchUntil, totalPages, max(fetchUntil-1, 0))
+		}
+		for p := startPage + 1; p <= fetchUntil; p++ {
+			if printHeaders {
+				_, _ = fmt.Fprintf(w, "  page %d/%d\n", p, fetchUntil)
+			}
 			if pagePause > 0 {
 				time.Sleep(pagePause)
 			}
@@ -250,29 +496,49 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 				log.Printf("error while fetching page %d: %v", p, fetchErr)
 				log.Printf("continuing with %d results collected so far (pages 1-%d)", len(matches), p-1)
 				log.Printf("tip: re-run with --page %d --all to resume later", p)
+				partial = true
+				partialReason = fmt.Sprintf("stopped at page %d due to fetch error", p)
 				break
 			}
+			fetchedPages++
 			matches = append(matches, r.Matches...)
 		}
-		_, _ = fmt.Fprintln(w)
+		if fetchedPages < totalPages && partialReason == "" {
+			partial = true
+			partialReason = fmt.Sprintf("fetched %d out of %d pages", fetchedPages, totalPages)
+		}
+		if printHeaders {
+			if partial {
+				_, _ = fmt.Fprintf(w, "Partial results: %s\n", partialReason)
+			}
+			_, _ = fmt.Fprintln(w)
+		}
 	}
 
-	if !opts.All {
+	if !opts.All && printHeaders {
 		_, _ = fmt.Fprintf(w, "Selected page: %d\n\n", opts.Page)
+	}
+
+	if opts.FailOnEmpty && len(matches) == 0 {
+		return fmt.Errorf("no results found (fail-on-empty enabled)")
+	}
+
+	payload := searchOutput{
+		Query:         opts.Query,
+		Total:         first.Total,
+		TotalPages:    totalPages,
+		FetchedPages:  fetchedPages,
+		Page:          startPage,
+		AllPages:      opts.All,
+		Partial:       partial,
+		PartialReason: partialReason,
+		Count:         len(matches),
+		Matches:       matches,
 	}
 
 	if opts.Out != "" {
 		if err := validateOutPath(opts.Out); err != nil {
 			return err
-		}
-		payload := searchOutput{
-			Query:      opts.Query,
-			Total:      first.Total,
-			TotalPages: totalPages,
-			Page:       startPage,
-			AllPages:   opts.All,
-			Count:      len(matches),
-			Matches:    matches,
 		}
 		data, err := json.MarshalIndent(payload, "", "  ")
 		if err != nil {
@@ -282,11 +548,41 @@ func runSearch(ctx context.Context, s *shodan.Client, args []string, w io.Writer
 		if err := os.WriteFile(outputPath, data, 0o600); err != nil {
 			return fmt.Errorf("write output file: %w", err)
 		}
-		_, _ = fmt.Fprintf(w, "Saved full JSON (%d records) to: %s\n\n", len(matches), outputPath)
+		if printHeaders {
+			_, _ = fmt.Fprintf(w, "Saved full JSON (%d records) to: %s\n\n", len(matches), outputPath)
+		}
 	}
 
-	for _, host := range matches {
-		_, _ = fmt.Fprintln(w, formatLine(host))
+	switch opts.Format {
+	case searchFormatText:
+		for _, host := range matches {
+			_, _ = fmt.Fprintln(w, formatLine(host))
+		}
+	case searchFormatJSON:
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal output: %w", err)
+		}
+		_, _ = fmt.Fprintln(w, string(data))
+	case searchFormatNDJSON:
+		encoder := json.NewEncoder(w)
+		for _, host := range matches {
+			if err := encoder.Encode(host); err != nil {
+				return fmt.Errorf("encode ndjson: %w", err)
+			}
+		}
+	case searchFormatTSV:
+		if !opts.NoHeader {
+			_, _ = fmt.Fprintln(w, "ip_str\tport\torg\tproduct\tversion\thttp_title")
+		}
+		for _, host := range matches {
+			_, _ = fmt.Fprintln(w, formatTSVLine(host))
+		}
+	default:
+		return fmt.Errorf("unsupported format: %s", opts.Format)
+	}
+	if opts.FailOnPartial && partial {
+		return fmt.Errorf("partial results (fail-on-partial enabled): %s", partialReason)
 	}
 	return nil
 }
@@ -364,16 +660,29 @@ func runDNS(ctx context.Context, s *shodan.Client, args []string, w io.Writer) e
 	return nil
 }
 
-// runResolve resolves hostnames to IP addresses.
+// runResolve resolves hostnames to IP addresses from args and/or --input.
 func runResolve(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("missing hostname(s), e.g. resolve google.com cloudflare.com")
-	}
-	result, err := s.ResolveHostnames(ctx, args...)
+	positional, inputPath, err := parseInputFlagArgs(args)
 	if err != nil {
 		return err
 	}
-	for _, host := range args {
+	hosts := append([]string(nil), positional...)
+	if inputPath != "" {
+		inputHosts, readErr := readInputValues(inputPath, os.Stdin)
+		if readErr != nil {
+			return readErr
+		}
+		hosts = append(hosts, inputHosts...)
+	}
+	hosts = dedupeValues(hosts)
+	if len(hosts) == 0 {
+		return fmt.Errorf("missing hostname(s), e.g. resolve google.com cloudflare.com")
+	}
+	result, err := s.ResolveHostnames(ctx, hosts...)
+	if err != nil {
+		return err
+	}
+	for _, host := range hosts {
 		ip, ok := result[host]
 		if !ok {
 			ip = "(not found)"
@@ -383,16 +692,29 @@ func runResolve(ctx context.Context, s *shodan.Client, args []string, w io.Write
 	return nil
 }
 
-// runReverse performs reverse DNS lookup for IP addresses.
+// runReverse performs reverse DNS lookup for IPs from args and/or --input.
 func runReverse(ctx context.Context, s *shodan.Client, args []string, w io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("missing IP address(es), e.g. reverse 8.8.8.8 1.1.1.1")
-	}
-	result, err := s.ReverseIPs(ctx, args...)
+	positional, inputPath, err := parseInputFlagArgs(args)
 	if err != nil {
 		return err
 	}
-	for _, ip := range args {
+	ips := append([]string(nil), positional...)
+	if inputPath != "" {
+		inputIPs, readErr := readInputValues(inputPath, os.Stdin)
+		if readErr != nil {
+			return readErr
+		}
+		ips = append(ips, inputIPs...)
+	}
+	ips = dedupeValues(ips)
+	if len(ips) == 0 {
+		return fmt.Errorf("missing IP address(es), e.g. reverse 8.8.8.8 1.1.1.1")
+	}
+	result, err := s.ReverseIPs(ctx, ips...)
+	if err != nil {
+		return err
+	}
+	for _, ip := range ips {
 		hosts, ok := result[ip]
 		if !ok || len(hosts) == 0 {
 			_, _ = fmt.Fprintf(w, "%-18s (no PTR record)\n", ip)

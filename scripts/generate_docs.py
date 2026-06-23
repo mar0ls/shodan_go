@@ -14,7 +14,7 @@ SOURCES = [
 OUT_DIR = PROJECT_ROOT / "docs"
 OUT_FILE = OUT_DIR / "DOCUMENTATION.md"
 
-# ── Category definitions ────────────────────────────────────────────────────
+# Category definitions.
 # Each entry: (display title, list of symbol selectors).
 # A selector is either:
 # - "Name" (matches func/type by name)
@@ -64,23 +64,20 @@ CATEGORIES = [
         ("func", "ReverseIPs"),
         ("func", "MyIP"),
     }),
-    ("Compatibility Aliases", {
-        ("func", "APIInfo"),
-        ("func", "HostSearch"),
-        ("func", "HostLookup"),
-        ("func", "New"),
-    }),
 ]
 
 COMMAND_REFERENCE = [
     ("host <ip>", "Fetch detailed host metadata for one IP address."),
+    ("host --input <file|->", "Fetch host metadata for multiple IPs from file/stdin."),
     ("search [--page N] <query>", "Run one paginated search request and print results."),
     ("search --all <query>", "Iterate all pages for a query (consumes query credits)."),
+    ("search --all --max-pages N <query>", "Cap pages fetched in --all mode for cost control."),
+    ("search --all --fail-on-partial <query>", "Return non-zero when all pages cannot be fetched."),
     ("search --out <file> <query>", "Save full JSON output to a file with safe path checks."),
     ("count <query>", "Return only the total number of matches (does not consume query credits)."),
     ("dns [--all-records] <domain>", "Fetch DNS records and subdomains for a domain."),
-    ("resolve <hostname> [...]", "Resolve one or more hostnames to IP addresses."),
-    ("reverse <ip> [...]", "Reverse-resolve one or more IPs to hostnames."),
+    ("resolve [--input <file|->] <hostname> [...]", "Resolve hostnames from args and/or input file/stdin."),
+    ("reverse [--input <file|->] <ip> [...]", "Reverse-resolve IPs from args and/or input file/stdin."),
     ("myip", "Return your public IP as seen by Shodan."),
 ]
 
@@ -106,7 +103,7 @@ OPERATION_MODEL_LINKS = [
     ("MyIP()", "string"),
 ]
 
-# ── Parsing ──────────────────────────────────────────────────────────────────
+# Parsing
 
 def parse_source(src_path: Path):
     """Return parsed info from one Go source file."""
@@ -133,7 +130,7 @@ def parse_source(src_path: Path):
             comment_buf.append(text)
             continue
 
-        # Package declaration — grab preceding comments as package-level doc
+        # Package declaration: grab preceding comments as package-level doc
         package_match = package_re.match(line)
         if not saw_package and package_match:
             saw_package = True
@@ -194,7 +191,7 @@ def collect_sources():
     return package_docs, blocks
 
 
-# ── Grouping ─────────────────────────────────────────────────────────────────
+# Grouping
 
 def group_blocks(blocks: list[dict]):
     """Return an ordered list of (category_title, [block, ...])."""
@@ -224,7 +221,7 @@ def group_blocks(blocks: list[dict]):
     return grouped
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 def slugify(text: str) -> str:
     """Return a GitHub-flavoured Markdown anchor slug for a heading."""
@@ -237,7 +234,7 @@ def slugify(text: str) -> str:
     return "#" + slug
 
 
-# ── Rendering ─────────────────────────────────────────────────────────────────
+# Rendering
 
 def _signature(block: dict) -> str:
     """Return display name: 'TypeName' for types, 'funcName()' for funcs."""
@@ -255,7 +252,7 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
         ("Quick start", "#quick-start"),
         ("Command reference", "#command-reference"),
         ("API method contracts", "#api-method-contracts"),
-        ("Operation → model mapping", "#operation--model-mapping"),
+        ("Operation to model mapping", "#operation-to-model-mapping"),
         ("Error handling & limits", "#error-handling--limits"),
     ]
     if package_docs:
@@ -266,7 +263,7 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
     with OUT_FILE.open("w", encoding="utf-8") as f:
 
         # Header
-        f.write("# Shodan-Go — Code Documentation\n\n")
+        f.write("# Shodan-Go Code Documentation\n\n")
 
         # Table of contents
         f.write("## Table of contents\n\n")
@@ -309,7 +306,7 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
         f.write("\n---\n\n")
 
         # Operation to model mapping
-        f.write("## Operation → model mapping\n\n")
+        f.write("## Operation to model mapping\n\n")
         f.write("| Operation | Main models involved |\n")
         f.write("|-----------|-----------------------|\n")
         for operation, models in OPERATION_MODEL_LINKS:
@@ -320,7 +317,7 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
         f.write("## Error handling & limits\n\n")
         f.write("- All API calls return an error for network failures and non-200 Shodan responses.\n")
         f.write("- All errors include operation context: `GetAPIInfo: decode response: ...`.\n")
-        f.write("- Network errors are sanitized — the API key is **never** included in error messages.\n")
+        f.write("- Network errors are sanitized: the API key is **never** included in error messages.\n")
         f.write("- Search pagination uses 100 results per page; `--all` consumes additional query credits.\n")
         f.write("- CLI exits early when `SHODAN_API_KEY` is missing.\n")
         f.write("- `--out` path is sanitized: absolute paths and relative paths are allowed, but upward traversal (`..`) is rejected.\n\n")
@@ -373,13 +370,13 @@ def render_md(package_docs: dict[str, list[str]], blocks: list[dict]):
     print(f"Generated {OUT_FILE}")
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 
 def main() -> int:
     missing = [src for src in SOURCES if not src.exists()]
     if missing:
         for src in missing:
-            print(f"Warning: source file '{src}' not found — skipping.")
+            print(f"Warning: source file '{src}' not found, skipping.")
 
     package_docs, blocks = collect_sources()
 

@@ -142,20 +142,6 @@ func (s *Client) GetHostByIP(ctx context.Context, ip string) (*Host, error) {
 	return &ret, nil
 }
 
-// HostSearch is a compatibility alias for SearchHosts.
-//
-// Deprecated: Use SearchHosts instead.
-func (s *Client) HostSearch(ctx context.Context, q string, page int) (*SearchResult, error) {
-	return s.SearchHosts(ctx, q, page)
-}
-
-// HostLookup is a compatibility alias for GetHostByIP.
-//
-// Deprecated: Use GetHostByIP instead.
-func (s *Client) HostLookup(ctx context.Context, ip string) (*Host, error) {
-	return s.GetHostByIP(ctx, ip)
-}
-
 // CountResult holds the total number of results for a search query.
 type CountResult struct {
 	Total  int                     `json:"total"`

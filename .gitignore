@@ -2,7 +2,10 @@
 .DS_Store
 .venv/
 build/
+dist/
 .vscode/
 shodan_go
+shodan-go
+shodan-go.exe
 coverage.out
 
