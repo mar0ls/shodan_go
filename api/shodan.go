@@ -41,13 +41,6 @@ func NewClient(apiKey string, opts ...Option) *Client {
 	return c
 }
 
-// New is kept as a short alias for NewClient.
-//
-// Deprecated: Use NewClient instead.
-func New(apiKey string) *Client {
-	return NewClient(apiKey)
-}
-
 // sanitizeErr strips the URL (which may contain the API key) from net/http URL errors.
 func sanitizeErr(err error) error {
 	var ue *url.Error

@@ -44,10 +44,3 @@ func (s *Client) GetAPIInfo(ctx context.Context) (*APIInfo, error) {
 	}
 	return &ret, nil
 }
-
-// APIInfo is a compatibility alias for GetAPIInfo.
-//
-// Deprecated: Use GetAPIInfo instead.
-func (s *Client) APIInfo(ctx context.Context) (*APIInfo, error) {
-	return s.GetAPIInfo(ctx)
-}

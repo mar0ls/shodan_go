@@ -1,19 +1,18 @@
-# Shodan-Go — Code Documentation
+# Shodan-Go Code Documentation
 
 ## Table of contents
 
 1. [Quick start](#quick-start)
 2. [Command reference](#command-reference)
 3. [API method contracts](#api-method-contracts)
-4. [Operation → model mapping](#operation--model-mapping)
+4. [Operation to model mapping](#operation-to-model-mapping)
 5. [Error handling & limits](#error-handling--limits)
 6. [Package overview](#package-overview)
 7. [CLI](#cli)
 8. [API Client Core](#api-client-core)
 9. [API Models](#api-models)
 10. [API Operations](#api-operations)
-11. [Compatibility Aliases](#compatibility-aliases)
-12. [Other](#other)
+11. [Other](#other)
 
 ---
 
@@ -44,13 +43,16 @@ fmt.Println(host.IPString, host.Org)
 | Command | Purpose |
 |---------|---------|
 | `host <ip>` | Fetch detailed host metadata for one IP address. |
+| `host --input <file|->` | Fetch host metadata for multiple IPs from file/stdin. |
 | `search [--page N] <query>` | Run one paginated search request and print results. |
 | `search --all <query>` | Iterate all pages for a query (consumes query credits). |
+| `search --all --max-pages N <query>` | Cap pages fetched in --all mode for cost control. |
+| `search --all --fail-on-partial <query>` | Return non-zero when all pages cannot be fetched. |
 | `search --out <file> <query>` | Save full JSON output to a file with safe path checks. |
 | `count <query>` | Return only the total number of matches (does not consume query credits). |
 | `dns [--all-records] <domain>` | Fetch DNS records and subdomains for a domain. |
-| `resolve <hostname> [...]` | Resolve one or more hostnames to IP addresses. |
-| `reverse <ip> [...]` | Reverse-resolve one or more IPs to hostnames. |
+| `resolve [--input <file|->] <hostname> [...]` | Resolve hostnames from args and/or input file/stdin. |
+| `reverse [--input <file|->] <ip> [...]` | Reverse-resolve IPs from args and/or input file/stdin. |
 | `myip` | Return your public IP as seen by Shodan. |
 
 ---
@@ -70,7 +72,7 @@ fmt.Println(host.IPString, host.Org)
 
 ---
 
-## Operation → model mapping
+## Operation to model mapping
 
 | Operation | Main models involved |
 |-----------|-----------------------|
@@ -89,7 +91,7 @@ fmt.Println(host.IPString, host.Org)
 
 - All API calls return an error for network failures and non-200 Shodan responses.
 - All errors include operation context: `GetAPIInfo: decode response: ...`.
-- Network errors are sanitized — the API key is **never** included in error messages.
+- Network errors are sanitized: the API key is **never** included in error messages.
 - Search pagination uses 100 results per page; `--all` consumes additional query credits.
 - CLI exits early when `SHODAN_API_KEY` is missing.
 - `--out` path is sanitized: absolute paths and relative paths are allowed, but upward traversal (`..`) is rejected.
@@ -131,12 +133,12 @@ Package shodan provides a small client for the Shodan API.
 | `validateOutPath()` | `main.go` | validateOutPath returns an error if the path contains ".." traversal components. |
 | `formatLine()` | `main.go` | formatLine builds one readable console row for search results. |
 | `fetchPageWithRetry()` | `main.go` | fetchPageWithRetry fetches a single search page, retrying up to maxRetries times on failure. |
-| `runHost()` | `main.go` | runHost fetches and prints details for a single IP. |
+| `runHost()` | `main.go` | runHost fetches and prints details for one IP or many via --input. |
 | `runSearch()` | `main.go` | runSearch executes a paginated host search and optionally exports JSON. |
 | `runCount()` | `main.go` | runCount prints the number of results for a query without consuming query credits. |
 | `runDNS()` | `main.go` | runDNS prints DNS records and subdomains for a domain. |
-| `runResolve()` | `main.go` | runResolve resolves hostnames to IP addresses. |
-| `runReverse()` | `main.go` | runReverse performs reverse DNS lookup for IP addresses. |
+| `runResolve()` | `main.go` | runResolve resolves hostnames to IP addresses from args and/or --input. |
+| `runReverse()` | `main.go` | runReverse performs reverse DNS lookup for IPs from args and/or --input. |
 | `runMyIP()` | `main.go` | runMyIP prints the caller's public IP address. |
 | `main()` | `main.go` | main dispatches CLI commands. |
 
@@ -169,7 +171,7 @@ baseDelay is multiplied by the attempt number between retries; pass 0 to skip sl
 
 ### `runHost()`
 
-runHost fetches and prints details for a single IP.
+runHost fetches and prints details for one IP or many via --input.
 
 ### `runSearch()`
 
@@ -188,11 +190,11 @@ Accepts optional --all-records flag to show all records instead of the default c
 
 ### `runResolve()`
 
-runResolve resolves hostnames to IP addresses.
+runResolve resolves hostnames to IP addresses from args and/or --input.
 
 ### `runReverse()`
 
-runReverse performs reverse DNS lookup for IP addresses.
+runReverse performs reverse DNS lookup for IPs from args and/or --input.
 
 ### `runMyIP()`
 
@@ -339,52 +341,43 @@ Optionally accepts facet names (e.g. "country", "org") to include aggregations.
 
 ---
 
-## Compatibility Aliases
-
-| Symbol | Source | Description |
-|--------|--------|-------------|
-| `APIInfo()` | `api/api.go` | APIInfo is a compatibility alias for GetAPIInfo. |
-| `HostSearch()` | `api/host.go` | HostSearch is a compatibility alias for SearchHosts. |
-| `HostLookup()` | `api/host.go` | HostLookup is a compatibility alias for GetHostByIP. |
-| `New()` | `api/shodan.go` | New is kept as a short alias for NewClient. |
-
-### `APIInfo()`
-
-APIInfo is a compatibility alias for GetAPIInfo.
-
-Deprecated: Use GetAPIInfo instead.
-
-### `HostSearch()`
-
-HostSearch is a compatibility alias for SearchHosts.
-
-Deprecated: Use SearchHosts instead.
-
-### `HostLookup()`
-
-HostLookup is a compatibility alias for GetHostByIP.
-
-Deprecated: Use GetHostByIP instead.
-
-### `New()`
-
-New is kept as a short alias for NewClient.
-
-Deprecated: Use NewClient instead.
-
----
-
 ## Other
 
 | Symbol | Source | Description |
 |--------|--------|-------------|
 | `init()` | `main.go` | init builds the CLI usage text using the current binary name. |
+| `normalizeSearchFormat()` | `main.go` | normalizeSearchFormat validates and canonicalizes supported search output formats. |
+| `parseInputFlagArgs()` | `main.go` | parseInputFlagArgs parses optional --input/-input while preserving positional args. |
+| `dedupeValues()` | `main.go` | dedupeValues removes duplicate items while preserving first-seen order. |
+| `readInputValues()` | `main.go` | readInputValues reads newline-separated values from a file or stdin ("-"). |
+| `formatTSVLine()` | `main.go` | formatTSVLine renders one host row as tab-separated values for script-friendly output. |
 | `joinFacets()` | `api/host.go` | joinFacets formats a slice of facet names for the API (comma-separated, each prefixed with count). |
 | `sanitizeErr()` | `api/shodan.go` | sanitizeErr strips the URL (which may contain the API key) from net/http URL errors. |
 
 ### `init()`
 
 init builds the CLI usage text using the current binary name.
+
+### `normalizeSearchFormat()`
+
+normalizeSearchFormat validates and canonicalizes supported search output formats.
+
+### `parseInputFlagArgs()`
+
+parseInputFlagArgs parses optional --input/-input while preserving positional args.
+
+### `dedupeValues()`
+
+dedupeValues removes duplicate items while preserving first-seen order.
+
+### `readInputValues()`
+
+readInputValues reads newline-separated values from a file or stdin ("-").
+Empty lines and lines starting with "#" are ignored.
+
+### `formatTSVLine()`
+
+formatTSVLine renders one host row as tab-separated values for script-friendly output.
 
 ### `joinFacets()`
 
